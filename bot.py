@@ -174,10 +174,87 @@ async def log_event(chat_id: int, user_id: int, event_type: str):
                          (chat_id, user_id, event_type, datetime.now()))
         await db.commit()
 
+async def trigger_group_promo(message: types.Message, target_user: types.User):
+    bot_info = await bot.get_me()
+    chat_id = message.chat.id
+    
+    promo_enabled = await get_setting("promo_enabled")
+    if promo_enabled != "true":
+        return
+
+    cooldown_val = await get_setting("cooldown")
+    cooldown = int(cooldown_val) if cooldown_val and cooldown_val.isdigit() else 60
+    current_time = time.time()
+    
+    if cooldown > 0 and chat_id in last_promo_times:
+        if current_time - last_promo_times[chat_id] < cooldown:
+            logger.info(f"Promo skipped in {chat_id} due to cooldown active.")
+            return
+
+    last_promo_times[chat_id] = current_time
+
+    promo_text = await get_setting("promo_text")
+    promo_url = await get_setting("promo_url")
+    promo_button_text = await get_setting("promo_button_text")
+    promo_media_id = await get_setting("promo_media_id")
+    promo_media_type = await get_setting("promo_media_type")
+    show_add_bot_button = await get_setting("show_add_bot_button")
+    auto_delete = await get_setting("auto_delete")
+    
+    # Format text with mention
+    user_name = target_user.first_name.replace('<', '&lt;').replace('>', '&gt;')
+    mention = f"<a href='tg://user?id={target_user.id}'>{user_name}</a>"
+    promo_text_formatted = promo_text.replace("{user}", mention)
+    
+    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_add_bot_button)
+    
+    # Auto Delete old message
+    if auto_delete == "true":
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute("SELECT last_promo_msg_id FROM groups WHERE chat_id=?", (chat_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    try:
+                        await bot.delete_message(chat_id, row[0])
+                    except TelegramAPIError:
+                        pass
+    
+    try:
+        sent_msg = None
+        if promo_media_id and promo_media_type == "photo":
+            sent_msg = await message.answer_photo(photo=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        elif promo_media_id and promo_media_type == "video":
+            sent_msg = await message.answer_video(video=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        else:
+            sent_msg = await message.answer(
+                promo_text_formatted,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True)
+            )
+            
+        if sent_msg:
+            async with aiosqlite.connect(DB_NAME) as db:
+                await db.execute("UPDATE groups SET last_promo_msg_id=? WHERE chat_id=?", (sent_msg.message_id, chat_id))
+                await db.commit()
+                
+        await log_event(chat_id, target_user.id, "promo_sent")
+        logger.info(f"Promo sent in {chat_id}")
+    except TelegramRetryAfter as e:
+        logger.warning(f"Rate limited in {chat_id}. Retry after {e.retry_after}")
+    except TelegramForbiddenError:
+        logger.warning(f"Forbidden to send message in {chat_id}. Marking inactive.")
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("UPDATE groups SET status='inactive', updated_at=? WHERE chat_id=?", (datetime.now(), chat_id))
+            await db.commit()
+    except TelegramAPIError as e:
+        logger.error(f"Failed to send promo in {chat_id}: {e}")
+
 # --- Handlers ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     if message.chat.type != ChatType.PRIVATE:
+        await trigger_group_promo(message, message.from_user)
         return
         
     async with aiosqlite.connect(DB_NAME) as db:
@@ -239,79 +316,7 @@ async def new_chat_member_handler(message: types.Message):
     if not has_real_users or not new_member:
         return
 
-    chat_id = message.chat.id
-    
-    promo_enabled = await get_setting("promo_enabled")
-    if promo_enabled != "true":
-        return
-
-    cooldown_val = await get_setting("cooldown")
-    cooldown = int(cooldown_val) if cooldown_val and cooldown_val.isdigit() else 60
-    current_time = time.time()
-    
-    if cooldown > 0 and chat_id in last_promo_times:
-        if current_time - last_promo_times[chat_id] < cooldown:
-            logger.info(f"Promo skipped in {chat_id} due to cooldown active.")
-            return
-
-    last_promo_times[chat_id] = current_time
-
-    promo_text = await get_setting("promo_text")
-    promo_url = await get_setting("promo_url")
-    promo_button_text = await get_setting("promo_button_text")
-    promo_media_id = await get_setting("promo_media_id")
-    promo_media_type = await get_setting("promo_media_type")
-    show_add_bot_button = await get_setting("show_add_bot_button")
-    auto_delete = await get_setting("auto_delete")
-    
-    # Format text with mention
-    user_name = new_member.first_name.replace('<', '&lt;').replace('>', '&gt;')
-    mention = f"<a href='tg://user?id={new_member.id}'>{user_name}</a>"
-    promo_text_formatted = promo_text.replace("{user}", mention)
-    
-    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_add_bot_button)
-    
-    # Auto Delete old message
-    if auto_delete == "true":
-        async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute("SELECT last_promo_msg_id FROM groups WHERE chat_id=?", (chat_id,)) as cursor:
-                row = await cursor.fetchone()
-                if row and row[0]:
-                    try:
-                        await bot.delete_message(chat_id, row[0])
-                    except TelegramAPIError:
-                        pass
-    
-    try:
-        sent_msg = None
-        if promo_media_id and promo_media_type == "photo":
-            sent_msg = await message.answer_photo(photo=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-        elif promo_media_id and promo_media_type == "video":
-            sent_msg = await message.answer_video(video=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-        else:
-            sent_msg = await message.answer(
-                promo_text_formatted,
-                reply_markup=keyboard,
-                parse_mode=ParseMode.HTML,
-                link_preview_options=types.LinkPreviewOptions(is_disabled=True)
-            )
-            
-        if sent_msg:
-            async with aiosqlite.connect(DB_NAME) as db:
-                await db.execute("UPDATE groups SET last_promo_msg_id=? WHERE chat_id=?", (sent_msg.message_id, chat_id))
-                await db.commit()
-                
-        await log_event(chat_id, message.from_user.id, "promo_sent")
-        logger.info(f"Promo sent in {chat_id}")
-    except TelegramRetryAfter as e:
-        logger.warning(f"Rate limited in {chat_id}. Retry after {e.retry_after}")
-    except TelegramForbiddenError:
-        logger.warning(f"Forbidden to send message in {chat_id}. Marking inactive.")
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute("UPDATE groups SET status='inactive', updated_at=? WHERE chat_id=?", (datetime.now(), chat_id))
-            await db.commit()
-    except TelegramAPIError as e:
-        logger.error(f"Failed to send promo in {chat_id}: {e}")
+    await trigger_group_promo(message, new_member)
 
 # --- Admin Panel ---
 def get_admin_keyboard(promo_enabled: str, user_id: int) -> InlineKeyboardMarkup:
