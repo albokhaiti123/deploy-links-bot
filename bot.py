@@ -41,7 +41,6 @@ async def init_db():
             )
         """)
         
-        # Migration: Add last_promo_msg_id if not exists
         try:
             await db.execute("ALTER TABLE groups ADD COLUMN last_promo_msg_id INTEGER")
         except aiosqlite.OperationalError:
@@ -77,7 +76,6 @@ async def init_db():
             )
         """)
         
-        # Default settings
         default_settings = {
             "promo_enabled": "true",
             "promo_text": "🔥 مرحبًا بك يا {user}!\nاكتشف خدماتنا ومحتوانا من خلال الرابط التالي.",
@@ -124,7 +122,8 @@ class AdminEdit(StatesGroup):
     waiting_for_cooldown = State()
     waiting_for_admin_id = State()
     waiting_for_media = State()
-    waiting_for_broadcast = State()
+    waiting_for_broadcast_users = State()
+    waiting_for_broadcast_groups = State()
 
 # --- Bot & Dispatcher ---
 bot = Bot(token=BOT_TOKEN) 
@@ -230,7 +229,7 @@ async def new_chat_member_handler(message: types.Message):
     cooldown = int(cooldown_val) if cooldown_val and cooldown_val.isdigit() else 60
     current_time = time.time()
     
-    if chat_id in last_promo_times:
+    if cooldown > 0 and chat_id in last_promo_times:
         if current_time - last_promo_times[chat_id] < cooldown:
             logger.info(f"Promo skipped in {chat_id} due to cooldown active.")
             return
@@ -303,7 +302,7 @@ def get_admin_keyboard(promo_enabled: str, user_id: int) -> InlineKeyboardMarkup
         [InlineKeyboardButton(text="👥 المجموعات", callback_data="admin_groups"),
          InlineKeyboardButton(text="📊 الإحصائيات", callback_data="admin_stats")],
         [InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="admin_settings")],
-        [InlineKeyboardButton(text="📣 رسالة إذاعة", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="📣 رسالة إذاعة", callback_data="admin_broadcast_menu")],
         [InlineKeyboardButton(text=toggle_text, callback_data="admin_toggle_promo")]
     ]
     
@@ -347,7 +346,7 @@ async def cb_admin_toggle_promo(callback: types.CallbackQuery):
 # --- Manage Admins ---
 @dp.callback_query(F.data == "admin_manage_admins")
 async def cb_admin_manage_admins(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID: # Owner only
+    if callback.from_user.id != ADMIN_ID: 
         return
     await state.clear()
     
@@ -658,21 +657,40 @@ async def cb_admin_stats(callback: types.CallbackQuery):
     await callback.answer()
 
 # --- Broadcast ---
-@dp.callback_query(F.data == "admin_broadcast")
-async def cb_admin_broadcast(callback: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "admin_broadcast_menu")
+async def cb_admin_broadcast_menu(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
-    await callback.message.answer("📢 أرسل الرسالة التي تريد إذاعتها لجميع المستخدمين (في الخاص):\nلإلغاء الأمر أرسل /cancel")
-    await state.set_state(AdminEdit.waiting_for_broadcast)
+    await state.clear()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 إذاعة للمستخدمين (في الخاص)", callback_data="admin_broadcast_users")],
+        [InlineKeyboardButton(text="🌐 إذاعة للمجموعات", callback_data="admin_broadcast_groups")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
+    ])
+    await callback.message.edit_text("📣 <b>خيارات الإذاعة:</b>\nاختر الوجهة التي تريد إرسال الإذاعة إليها:", reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
 
-@dp.message(AdminEdit.waiting_for_broadcast)
-async def process_broadcast(message: types.Message, state: FSMContext):
+@dp.callback_query(F.data == "admin_broadcast_users")
+async def cb_admin_broadcast_users(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await callback.message.answer("📢 أرسل الرسالة التي تريد إذاعتها لجميع المستخدمين (في الخاص):\nلإلغاء الأمر أرسل /cancel")
+    await state.set_state(AdminEdit.waiting_for_broadcast_users)
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_broadcast_groups")
+async def cb_admin_broadcast_groups(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await callback.message.answer("🌐 أرسل الرسالة التي تريد إذاعتها لجميع المجموعات النشطة:\nلإلغاء الأمر أرسل /cancel")
+    await state.set_state(AdminEdit.waiting_for_broadcast_groups)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_broadcast_users)
+async def process_broadcast_users(message: types.Message, state: FSMContext):
     if message.text == '/cancel':
         await message.answer("تم الإلغاء.")
         await state.clear()
         return
         
-    status_msg = await message.answer("🚀 جاري الإرسال، يرجى الانتظار...")
+    status_msg = await message.answer("🚀 جاري الإرسال للمستخدمين، يرجى الانتظار...")
     
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT telegram_id FROM users") as cursor:
@@ -690,6 +708,35 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     await status_msg.edit_text(f"✅ تمت الإذاعة بنجاح لـ {success} مستخدم.")
     await state.clear()
 
+@dp.message(AdminEdit.waiting_for_broadcast_groups)
+async def process_broadcast_groups(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("تم الإلغاء.")
+        await state.clear()
+        return
+        
+    status_msg = await message.answer("🚀 جاري الإرسال للمجموعات، يرجى الانتظار...")
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT chat_id FROM groups WHERE status='active'") as cursor:
+            groups = await cursor.fetchall()
+            
+    success = 0
+    for g in groups:
+        try:
+            await message.copy_to(g[0])
+            success += 1
+            await asyncio.sleep(0.05) # Prevent flood limit
+        except TelegramForbiddenError:
+            async with aiosqlite.connect(DB_NAME) as db2:
+                await db2.execute("UPDATE groups SET status='inactive' WHERE chat_id=?", (g[0],))
+                await db2.commit()
+        except Exception:
+            pass
+            
+    await status_msg.edit_text(f"✅ تمت الإذاعة بنجاح لـ {success} مجموعة.")
+    await state.clear()
+
 # --- Settings ---
 @dp.callback_query(F.data == "admin_settings")
 async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
@@ -700,6 +747,8 @@ async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
     auto_del = await get_setting("auto_delete")
     auto_del_text = "🧹 إيقاف الحذف التلقائي" if auto_del == "true" else "🧹 تشغيل الحذف التلقائي"
     
+    cooldown_display = "بدون انتظار (0 ثانية)" if cooldown == "0" else f"{cooldown} ثانية"
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏱ تعديل مدة الانتظار (Cooldown)", callback_data="admin_edit_cooldown")],
         [InlineKeyboardButton(text=auto_del_text, callback_data="admin_toggle_autodelete")],
@@ -707,7 +756,7 @@ async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
     ])
     text = (
         "⚙️ <b>الإعدادات:</b>\n\n"
-        f"⏱ مدة الانتظار الحالية: {cooldown} ثانية\n"
+        f"⏱ مدة الانتظار الحالية: {cooldown_display}\n"
         f"🧹 الحذف التلقائي للإعلان القديم: {'مفعل ✅' if auto_del == 'true' else 'معطل ❌'}"
     )
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
@@ -727,6 +776,7 @@ async def cb_admin_edit_cooldown(callback: types.CallbackQuery, state: FSMContex
     if not await is_admin(callback.from_user.id):
         return
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚡️ مع كل انضمام (0 ثانية)", callback_data="set_cooldown_0")],
         [InlineKeyboardButton(text="30 ثانية", callback_data="set_cooldown_30"),
          InlineKeyboardButton(text="60 ثانية", callback_data="set_cooldown_60")],
         [InlineKeyboardButton(text="120 ثانية", callback_data="set_cooldown_120"),
@@ -734,7 +784,7 @@ async def cb_admin_edit_cooldown(callback: types.CallbackQuery, state: FSMContex
         [InlineKeyboardButton(text="إدخال قيمة مخصصة", callback_data="set_cooldown_custom")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_settings")]
     ])
-    await callback.message.edit_text("⏱ اختر مدة الانتظار بين كل إعلان وآخر في نفس المجموعة:", reply_markup=keyboard)
+    await callback.message.edit_text("⏱ اختر مدة الانتظار بين كل إعلان وآخر في نفس المجموعة:\n\n*ملاحظة: اختيار '0 ثانية' يعني إرسال الإعلان مع كل عضو جديد ينضم دون انتظار.", reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("set_cooldown_"))
