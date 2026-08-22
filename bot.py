@@ -85,7 +85,8 @@ async def init_db():
             "promo_media_id": "",
             "promo_media_type": "",
             "auto_delete": "false",
-            "show_add_bot_button": "true"
+            "show_add_bot_button": "true",
+            "start_message": "🤖 أهلاً بك في البوت!\n\nهذا البوت يساعدك على إضافة رسائل ترويجية إلى مجموعتك عند انضمام أعضاء جدد.\nأضف البوت إلى مجموعتك وسيبدأ العمل تلقائياً بناءً على إعدادات الإدارة."
         }
         
         for k, v in default_settings.items():
@@ -124,6 +125,7 @@ class AdminEdit(StatesGroup):
     waiting_for_media = State()
     waiting_for_broadcast_users = State()
     waiting_for_broadcast_groups = State()
+    waiting_for_start_msg = State()
 
 # --- Bot & Dispatcher ---
 bot = Bot(token=BOT_TOKEN) 
@@ -164,12 +166,15 @@ async def cmd_start(message: types.Message):
         [InlineKeyboardButton(text="ℹ️ طريقة الاستخدام", callback_data="help_usage")]
     ])
     
-    text = (
-        "🤖 أهلاً بك في البوت!\n\n"
-        "هذا البوت يساعدك على إضافة رسائل ترويجية إلى مجموعتك عند انضمام أعضاء جدد.\n"
-        "أضف البوت إلى مجموعتك وسيبدأ العمل تلقائياً بناءً على إعدادات الإدارة."
-    )
-    await message.answer(text, reply_markup=keyboard)
+    start_text = await get_setting("start_message")
+    if not start_text:
+        start_text = (
+            "🤖 أهلاً بك في البوت!\n\n"
+            "هذا البوت يساعدك على إضافة رسائل ترويجية إلى مجموعتك عند انضمام أعضاء جدد.\n"
+            "أضف البوت إلى مجموعتك وسيبدأ العمل تلقائياً بناءً على إعدادات الإدارة."
+        )
+        
+    await message.answer(start_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 @dp.callback_query(F.data == "help_usage")
 async def cb_help_usage(callback: types.CallbackQuery):
@@ -750,6 +755,7 @@ async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
     cooldown_display = "بدون انتظار (0 ثانية)" if cooldown == "0" else f"{cooldown} ثانية"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 تعديل رسالة الترحيب (/start)", callback_data="admin_edit_start_msg")],
         [InlineKeyboardButton(text="⏱ تعديل مدة الانتظار (Cooldown)", callback_data="admin_edit_cooldown")],
         [InlineKeyboardButton(text=auto_del_text, callback_data="admin_toggle_autodelete")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
@@ -762,6 +768,23 @@ async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
     
+@dp.callback_query(F.data == "admin_edit_start_msg")
+async def cb_admin_edit_start_msg(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await callback.message.answer("أرسل الآن رسالة الترحيب الجديدة التي ستظهر للأعضاء في الخاص عند الدخول للبوت وإرسال /start:\n(يمكنك استخدام HTML)\nلإلغاء الأمر أرسل /cancel")
+    await state.set_state(AdminEdit.waiting_for_start_msg)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_start_msg)
+async def process_start_msg(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("تم الإلغاء.")
+        await state.clear()
+        return
+    await set_setting("start_message", message.text)
+    await message.answer("✅ تم تحديث رسالة الترحيب بنجاح.")
+    await state.clear()
+
 @dp.callback_query(F.data == "admin_toggle_autodelete")
 async def cb_admin_toggle_autodelete(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
