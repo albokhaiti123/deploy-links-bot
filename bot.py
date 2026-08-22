@@ -40,6 +40,13 @@ async def init_db():
                 updated_at TIMESTAMP
             )
         """)
+        
+        # Migration: Add last_promo_msg_id if not exists
+        try:
+            await db.execute("ALTER TABLE groups ADD COLUMN last_promo_msg_id INTEGER")
+        except aiosqlite.OperationalError:
+            pass
+            
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 telegram_id INTEGER PRIMARY KEY,
@@ -73,10 +80,14 @@ async def init_db():
         # Default settings
         default_settings = {
             "promo_enabled": "true",
-            "promo_text": "🔥 مرحبًا بك!\nاكتشف خدماتنا ومحتوانا من خلال الرابط التالي.",
+            "promo_text": "🔥 مرحبًا بك يا {user}!\nاكتشف خدماتنا ومحتوانا من خلال الرابط التالي.",
             "promo_url": "https://t.me/example",
             "promo_button_text": "🚀 اشترك الآن",
-            "cooldown": "60"
+            "cooldown": "60",
+            "promo_media_id": "",
+            "promo_media_type": "",
+            "auto_delete": "false",
+            "show_add_bot_button": "true"
         }
         
         for k, v in default_settings.items():
@@ -112,6 +123,8 @@ class AdminEdit(StatesGroup):
     waiting_for_promo_button = State()
     waiting_for_cooldown = State()
     waiting_for_admin_id = State()
+    waiting_for_media = State()
+    waiting_for_broadcast = State()
 
 # --- Bot & Dispatcher ---
 bot = Bot(token=BOT_TOKEN) 
@@ -120,11 +133,12 @@ dp = Dispatcher(storage=MemoryStorage())
 def get_bot_add_url(bot_username: str) -> str:
     return f"https://t.me/{bot_username}?startgroup=add"
 
-def build_promo_keyboard(promo_url: str, promo_button_text: str, bot_username: str) -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton(text=promo_button_text, url=promo_url)],
-        [InlineKeyboardButton(text="🤖 أضف البوت إلى مجموعتك", url=get_bot_add_url(bot_username))]
-    ]
+def build_promo_keyboard(promo_url: str, promo_button_text: str, bot_username: str, show_bot_btn: str = "true") -> InlineKeyboardMarkup:
+    keyboard = []
+    if promo_button_text and promo_url:
+        keyboard.append([InlineKeyboardButton(text=promo_button_text, url=promo_url)])
+    if show_bot_btn == "true":
+        keyboard.append([InlineKeyboardButton(text="🤖 أضف البوت إلى مجموعتك", url=get_bot_add_url(bot_username))])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 # --- Utilities ---
@@ -197,11 +211,13 @@ async def new_chat_member_handler(message: types.Message):
     bot_info = await bot.get_me()
     
     has_real_users = False
+    new_member = None
     for member in message.new_chat_members:
         if member.id != bot_info.id:
             has_real_users = True
+            new_member = member
             
-    if not has_real_users:
+    if not has_real_users or not new_member:
         return
 
     chat_id = message.chat.id
@@ -224,15 +240,48 @@ async def new_chat_member_handler(message: types.Message):
     promo_text = await get_setting("promo_text")
     promo_url = await get_setting("promo_url")
     promo_button_text = await get_setting("promo_button_text")
+    promo_media_id = await get_setting("promo_media_id")
+    promo_media_type = await get_setting("promo_media_type")
+    show_add_bot_button = await get_setting("show_add_bot_button")
+    auto_delete = await get_setting("auto_delete")
     
-    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME)
+    # Format text with mention
+    user_name = new_member.first_name.replace('<', '&lt;').replace('>', '&gt;')
+    mention = f"<a href='tg://user?id={new_member.id}'>{user_name}</a>"
+    promo_text_formatted = promo_text.replace("{user}", mention)
+    
+    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_add_bot_button)
+    
+    # Auto Delete old message
+    if auto_delete == "true":
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute("SELECT last_promo_msg_id FROM groups WHERE chat_id=?", (chat_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    try:
+                        await bot.delete_message(chat_id, row[0])
+                    except TelegramAPIError:
+                        pass
     
     try:
-        await message.answer(
-            promo_text,
-            reply_markup=keyboard,
-            link_preview_options=types.LinkPreviewOptions(is_disabled=True)
-        )
+        sent_msg = None
+        if promo_media_id and promo_media_type == "photo":
+            sent_msg = await message.answer_photo(photo=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        elif promo_media_id and promo_media_type == "video":
+            sent_msg = await message.answer_video(video=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        else:
+            sent_msg = await message.answer(
+                promo_text_formatted,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True)
+            )
+            
+        if sent_msg:
+            async with aiosqlite.connect(DB_NAME) as db:
+                await db.execute("UPDATE groups SET last_promo_msg_id=? WHERE chat_id=?", (sent_msg.message_id, chat_id))
+                await db.commit()
+                
         await log_event(chat_id, message.from_user.id, "promo_sent")
         logger.info(f"Promo sent in {chat_id}")
     except TelegramRetryAfter as e:
@@ -248,19 +297,18 @@ async def new_chat_member_handler(message: types.Message):
 # --- Admin Panel ---
 def get_admin_keyboard(promo_enabled: str, user_id: int) -> InlineKeyboardMarkup:
     toggle_text = "⏸️ إيقاف الترويج" if promo_enabled == "true" else "▶️ تشغيل الترويج"
-    toggle_data = "admin_toggle_promo"
     
     keyboard = [
         [InlineKeyboardButton(text="📢 إعداد الترويج", callback_data="admin_promo_settings")],
         [InlineKeyboardButton(text="👥 المجموعات", callback_data="admin_groups"),
          InlineKeyboardButton(text="📊 الإحصائيات", callback_data="admin_stats")],
         [InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="admin_settings")],
-        [InlineKeyboardButton(text=toggle_text, callback_data=toggle_data)]
+        [InlineKeyboardButton(text="📣 رسالة إذاعة", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text=toggle_text, callback_data="admin_toggle_promo")]
     ]
     
-    # Only the main Owner can manage other admins
     if user_id == ADMIN_ID:
-        keyboard.insert(3, [InlineKeyboardButton(text="👑 إدارة المشرفين", callback_data="admin_manage_admins")])
+        keyboard.insert(4, [InlineKeyboardButton(text="👑 إدارة المشرفين", callback_data="admin_manage_admins")])
         
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -369,15 +417,34 @@ async def cb_admin_promo_settings(callback: types.CallbackQuery, state: FSMConte
     if not await is_admin(callback.from_user.id):
         return
     await state.clear()
+    show_bot_btn = await get_setting("show_add_bot_button")
+    btn_text = "🤖 إخفاء زر البوت" if show_bot_btn == "true" else "🤖 إظهار زر البوت"
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 تعديل نص الإعلان", callback_data="admin_edit_text")],
-        [InlineKeyboardButton(text="🔗 تعديل الرابط", callback_data="admin_edit_url")],
-        [InlineKeyboardButton(text="🔘 تعديل نص الزر", callback_data="admin_edit_button")],
+        [InlineKeyboardButton(text="📝 تعديل النص", callback_data="admin_edit_text"),
+         InlineKeyboardButton(text="🖼️ تعديل الوسائط", callback_data="admin_edit_media")],
+        [InlineKeyboardButton(text="🔗 تعديل الرابط", callback_data="admin_edit_url"),
+         InlineKeyboardButton(text="🔘 تعديل الزر", callback_data="admin_edit_button")],
+        [InlineKeyboardButton(text=btn_text, callback_data="admin_toggle_bot_btn")],
         [InlineKeyboardButton(text="👁 معاينة الإعلان", callback_data="admin_preview_promo")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
     ])
-    await callback.message.edit_text("📢 <b>إعداد الترويج</b>\nاختر ما تريد تعديله:", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    text = (
+        "📢 <b>إعداد الترويج</b>\n\n"
+        "يمكنك استخدام <code>{user}</code> في النص ليتم استبدالها تلقائياً بـ 'منشن' للعضو الجديد.\n\n"
+        "اختر ما تريد تعديله:"
+    )
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
+
+@dp.callback_query(F.data == "admin_toggle_bot_btn")
+async def cb_admin_toggle_bot_btn(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    current = await get_setting("show_add_bot_button")
+    new_val = "false" if current == "true" else "true"
+    await set_setting("show_add_bot_button", new_val)
+    await callback.answer("✅ تم التحديث")
+    await cb_admin_promo_settings(callback, state)
 
 @dp.callback_query(F.data == "admin_preview_promo")
 async def cb_admin_preview_promo(callback: types.CallbackQuery):
@@ -387,12 +454,25 @@ async def cb_admin_preview_promo(callback: types.CallbackQuery):
     promo_text = await get_setting("promo_text")
     promo_url = await get_setting("promo_url")
     promo_button_text = await get_setting("promo_button_text")
+    promo_media_id = await get_setting("promo_media_id")
+    promo_media_type = await get_setting("promo_media_type")
+    show_bot_btn = await get_setting("show_add_bot_button")
+    
     bot_info = await bot.get_me()
     
-    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME)
+    user_name = callback.from_user.first_name.replace('<', '&lt;').replace('>', '&gt;')
+    mention = f"<a href='tg://user?id={callback.from_user.id}'>{user_name}</a>"
+    promo_text_formatted = promo_text.replace("{user}", mention)
+    
+    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_bot_btn)
     
     try:
-        await callback.message.answer(f"👁 <b>معاينة:</b>\n\n{promo_text}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        if promo_media_id and promo_media_type == "photo":
+            await callback.message.answer_photo(photo=promo_media_id, caption=f"👁 <b>معاينة:</b>\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        elif promo_media_id and promo_media_type == "video":
+            await callback.message.answer_video(video=promo_media_id, caption=f"👁 <b>معاينة:</b>\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        else:
+            await callback.message.answer(f"👁 <b>معاينة:</b>\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
     except Exception as e:
         await callback.message.answer(f"❌ حدث خطأ في المعاينة. تأكد من صحة الرابط أو النص.\nالخطأ: {e}")
     await callback.answer()
@@ -401,7 +481,7 @@ async def cb_admin_preview_promo(callback: types.CallbackQuery):
 async def cb_admin_edit_text(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id):
         return
-    await callback.message.answer("أرسل الآن نص الإعلان الجديد:\nلإلغاء الأمر أرسل /cancel")
+    await callback.message.answer("أرسل الآن نص الإعلان الجديد:\n(تذكر يمكنك استخدام <code>{user}</code> للمنشن)\nلإلغاء الأمر أرسل /cancel", parse_mode=ParseMode.HTML)
     await state.set_state(AdminEdit.waiting_for_promo_text)
     await callback.answer()
 
@@ -413,6 +493,39 @@ async def process_promo_text(message: types.Message, state: FSMContext):
         return
     await set_setting("promo_text", message.text)
     await message.answer("✅ تم تحديث نص الإعلان بنجاح.")
+    await state.clear()
+    
+@dp.callback_query(F.data == "admin_edit_media")
+async def cb_admin_edit_media(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await callback.message.answer("أرسل الآن (صورة أو فيديو) ليتم إرفاقه مع الإعلان.\nلحذف الوسائط والاكتفاء بالنص أرسل /clear\nلإلغاء الأمر أرسل /cancel")
+    await state.set_state(AdminEdit.waiting_for_media)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_media, F.photo | F.video | F.text)
+async def process_promo_media(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("تم الإلغاء.")
+        await state.clear()
+        return
+    elif message.text == '/clear':
+        await set_setting("promo_media_id", "")
+        await set_setting("promo_media_type", "")
+        await message.answer("✅ تم حذف الوسائط. سيتم إرسال الإعلان كنص فقط.")
+        await state.clear()
+        return
+        
+    if message.photo:
+        await set_setting("promo_media_id", message.photo[-1].file_id)
+        await set_setting("promo_media_type", "photo")
+        await message.answer("✅ تم حفظ الصورة بنجاح.")
+    elif message.video:
+        await set_setting("promo_media_id", message.video.file_id)
+        await set_setting("promo_media_type", "video")
+        await message.answer("✅ تم حفظ الفيديو بنجاح.")
+    else:
+        await message.answer("❌ أرسل صورة أو فيديو، أو /clear، أو /cancel.")
+        return
     await state.clear()
 
 @dp.callback_query(F.data == "admin_edit_url")
@@ -454,6 +567,7 @@ async def process_promo_button(message: types.Message, state: FSMContext):
     await message.answer("✅ تم تحديث نص الزر بنجاح.")
     await state.clear()
 
+# --- Groups ---
 @dp.callback_query(F.data == "admin_groups")
 async def cb_admin_groups(callback: types.CallbackQuery):
     if not await is_admin(callback.from_user.id):
@@ -469,10 +583,56 @@ async def cb_admin_groups(callback: types.CallbackQuery):
         f"✅ المجموعات النشطة: {active_count}\n"
         f"❌ المجموعات غير النشطة: {inactive_count}"
     )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ إدارة المجموعات (تصفح/مغادرة)", callback_data="admin_list_groups_0")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
+    ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
 
+@dp.callback_query(F.data.startswith("admin_list_groups_"))
+async def cb_admin_list_groups(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    page = int(callback.data.split("_")[3])
+    offset = page * 5
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT chat_id, title FROM groups WHERE status='active' LIMIT 5 OFFSET ?", (offset,)) as cursor:
+            groups = await cursor.fetchall()
+        async with db.execute("SELECT COUNT(*) FROM groups WHERE status='active'") as cursor:
+            total = (await cursor.fetchone())[0]
+            
+    keyboard = []
+    for g in groups:
+        title = g[1][:20] if g[1] else "مجموعة"
+        keyboard.append([InlineKeyboardButton(text=f"🚪 مغادرة: {title}", callback_data=f"admin_leave_{g[0]}")])
+        
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ السابق", callback_data=f"admin_list_groups_{page-1}"))
+    if offset + 5 < total:
+        nav.append(InlineKeyboardButton(text="التالي ➡️", callback_data=f"admin_list_groups_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+        
+    keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_groups")])
+    await callback.message.edit_text("⚙️ <b>تصفح المجموعات:</b>\n\nاضغط على أي مجموعة لمغادرتها فوراً:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("admin_leave_"))
+async def cb_admin_leave(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    chat_id = int(callback.data.split("_")[2])
+    try:
+        await bot.leave_chat(chat_id)
+        await callback.answer("✅ تمت مغادرة المجموعة بنجاح", show_alert=True)
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("UPDATE groups SET status='inactive' WHERE chat_id=?", (chat_id,))
+            await db.commit()
+    except Exception as e:
+        await callback.answer(f"❌ لم أتمكن من المغادرة: {e}", show_alert=True)
+    await cb_admin_groups(callback)
+
+# --- Stats ---
 @dp.callback_query(F.data == "admin_stats")
 async def cb_admin_stats(callback: types.CallbackQuery):
     if not await is_admin(callback.from_user.id):
@@ -497,22 +657,70 @@ async def cb_admin_stats(callback: types.CallbackQuery):
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
 
+# --- Broadcast ---
+@dp.callback_query(F.data == "admin_broadcast")
+async def cb_admin_broadcast(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await callback.message.answer("📢 أرسل الرسالة التي تريد إذاعتها لجميع المستخدمين (في الخاص):\nلإلغاء الأمر أرسل /cancel")
+    await state.set_state(AdminEdit.waiting_for_broadcast)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_broadcast)
+async def process_broadcast(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("تم الإلغاء.")
+        await state.clear()
+        return
+        
+    status_msg = await message.answer("🚀 جاري الإرسال، يرجى الانتظار...")
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT telegram_id FROM users") as cursor:
+            users = await cursor.fetchall()
+            
+    success = 0
+    for u in users:
+        try:
+            await message.copy_to(u[0])
+            success += 1
+            await asyncio.sleep(0.05) # Prevent flood limit
+        except Exception:
+            pass
+            
+    await status_msg.edit_text(f"✅ تمت الإذاعة بنجاح لـ {success} مستخدم.")
+    await state.clear()
+
+# --- Settings ---
 @dp.callback_query(F.data == "admin_settings")
 async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id):
         return
     await state.clear()
     cooldown = await get_setting("cooldown")
+    auto_del = await get_setting("auto_delete")
+    auto_del_text = "🧹 إيقاف الحذف التلقائي" if auto_del == "true" else "🧹 تشغيل الحذف التلقائي"
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏱ تعديل مدة الانتظار (Cooldown)", callback_data="admin_edit_cooldown")],
+        [InlineKeyboardButton(text=auto_del_text, callback_data="admin_toggle_autodelete")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
     ])
     text = (
         "⚙️ <b>الإعدادات:</b>\n\n"
-        f"⏱ مدة الانتظار الحالية: {cooldown} ثانية"
+        f"⏱ مدة الانتظار الحالية: {cooldown} ثانية\n"
+        f"🧹 الحذف التلقائي للإعلان القديم: {'مفعل ✅' if auto_del == 'true' else 'معطل ❌'}"
     )
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
+    
+@dp.callback_query(F.data == "admin_toggle_autodelete")
+async def cb_admin_toggle_autodelete(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    current = await get_setting("auto_delete")
+    new_val = "false" if current == "true" else "true"
+    await set_setting("auto_delete", new_val)
+    await callback.answer("✅ تم التحديث")
+    await cb_admin_settings(callback, state)
 
 @dp.callback_query(F.data == "admin_edit_cooldown")
 async def cb_admin_edit_cooldown(callback: types.CallbackQuery, state: FSMContext):
