@@ -86,7 +86,10 @@ async def init_db():
             "promo_media_type": "",
             "auto_delete": "false",
             "show_add_bot_button": "true",
-            "start_message": "🤖 أهلاً بك في البوت!\n\nهذا البوت يساعدك على إضافة رسائل ترويجية إلى مجموعتك عند انضمام أعضاء جدد.\nأضف البوت إلى مجموعتك وسيبدأ العمل تلقائياً بناءً على إعدادات الإدارة."
+            "start_message": "🤖 أهلاً بك في البوت!\n\nهذا البوت يساعدك على إضافة رسائل ترويجية إلى مجموعتك عند انضمام أعضاء جدد.\nأضف البوت إلى مجموعتك وسيبدأ العمل تلقائياً بناءً على إعدادات الإدارة.",
+            "start_btn2_name": "ℹ️ طريقة الاستخدام",
+            "start_btn2_type": "text",
+            "start_btn2_content": "ℹ️ <b>طريقة الاستخدام:</b>\n\n1. اضغط على زر 'إضافة البوت إلى مجموعتي'.\n2. اختر المجموعة التي تريد إضافة البوت إليها.\n3. عند انضمام أي عضو جديد، سيقوم البوت بإرسال رسالة ترحيبية ترويجية.\n4. يمتلك البوت نظام حماية من التكرار (Cooldown) لمنع الإزعاج."
         }
         
         for k, v in default_settings.items():
@@ -126,6 +129,9 @@ class AdminEdit(StatesGroup):
     waiting_for_broadcast_users = State()
     waiting_for_broadcast_groups = State()
     waiting_for_start_msg = State()
+    waiting_for_start_btn2_name = State()
+    waiting_for_start_btn2_url = State()
+    waiting_for_start_btn2_text = State()
 
 # --- Bot & Dispatcher ---
 bot = Bot(token=BOT_TOKEN) 
@@ -141,6 +147,25 @@ def build_promo_keyboard(promo_url: str, promo_button_text: str, bot_username: s
     if show_bot_btn == "true":
         keyboard.append([InlineKeyboardButton(text="🤖 أضف البوت إلى مجموعتك", url=get_bot_add_url(bot_username))])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+async def get_start_message_data(bot_username: str):
+    start_text = await get_setting("start_message")
+    if not start_text:
+        start_text = "🤖 أهلاً بك في البوت!"
+        
+    btn2_name = await get_setting("start_btn2_name")
+    btn2_type = await get_setting("start_btn2_type")
+    btn2_content = await get_setting("start_btn2_content")
+    
+    kb = [[InlineKeyboardButton(text="➕ إضافة البوت إلى مجموعتي", url=get_bot_add_url(bot_username))]]
+    
+    if btn2_name:
+        if btn2_type == "url":
+            kb.append([InlineKeyboardButton(text=btn2_name, url=btn2_content)])
+        else:
+            kb.append([InlineKeyboardButton(text=btn2_name, callback_data="start_btn2_click")])
+            
+    return start_text, InlineKeyboardMarkup(inline_keyboard=kb)
 
 # --- Utilities ---
 async def log_event(chat_id: int, user_id: int, event_type: str):
@@ -161,32 +186,22 @@ async def cmd_start(message: types.Message):
         await db.commit()
         
     bot_info = await bot.get_me()
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ إضافة البوت إلى مجموعتي", url=get_bot_add_url(bot_info.username or BOT_USERNAME))],
-        [InlineKeyboardButton(text="ℹ️ طريقة الاستخدام", callback_data="help_usage")]
-    ])
-    
-    start_text = await get_setting("start_message")
-    if not start_text:
-        start_text = (
-            "🤖 أهلاً بك في البوت!\n\n"
-            "هذا البوت يساعدك على إضافة رسائل ترويجية إلى مجموعتك عند انضمام أعضاء جدد.\n"
-            "أضف البوت إلى مجموعتك وسيبدأ العمل تلقائياً بناءً على إعدادات الإدارة."
-        )
-        
-    await message.answer(start_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
+    await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-@dp.callback_query(F.data == "help_usage")
-async def cb_help_usage(callback: types.CallbackQuery):
-    text = (
-        "ℹ️ <b>طريقة الاستخدام:</b>\n\n"
-        "1. اضغط على زر 'إضافة البوت إلى مجموعتي'.\n"
-        "2. اختر المجموعة التي تريد إضافة البوت إليها.\n"
-        "3. عند انضمام أي عضو جديد، سيقوم البوت بإرسال رسالة ترحيبية ترويجية.\n"
-        "4. يمتلك البوت نظام حماية من التكرار (Cooldown) لمنع الإزعاج."
-    )
-    await callback.message.edit_text(text, parse_mode=ParseMode.HTML)
-    await callback.answer()
+@dp.callback_query(F.data == "start_btn2_click")
+async def cb_start_btn2_click(callback: types.CallbackQuery):
+    content = await get_setting("start_btn2_content")
+    if not content:
+        content = "لا توجد رسالة."
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="start_back")]])
+    await callback.message.edit_text(content, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+@dp.callback_query(F.data == "start_back")
+async def cb_start_back(callback: types.CallbackQuery):
+    bot_info = await bot.get_me()
+    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 # --- Group Events ---
 @dp.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> IS_MEMBER))
@@ -434,7 +449,7 @@ async def cb_admin_promo_settings(callback: types.CallbackQuery, state: FSMConte
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
     ])
     text = (
-        "📢 <b>إعداد الترويج</b>\n\n"
+        "📢 <b>إعداد الترويج (للمجموعات)</b>\n\n"
         "يمكنك استخدام <code>{user}</code> في النص ليتم استبدالها تلقائياً بـ 'منشن' للعضو الجديد.\n\n"
         "اختر ما تريد تعديله:"
     )
@@ -755,7 +770,7 @@ async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
     cooldown_display = "بدون انتظار (0 ثانية)" if cooldown == "0" else f"{cooldown} ثانية"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 تعديل رسالة الترحيب (/start)", callback_data="admin_edit_start_msg")],
+        [InlineKeyboardButton(text="💬 إعدادات رسالة الترحيب (الخاص)", callback_data="admin_start_settings")],
         [InlineKeyboardButton(text="⏱ تعديل مدة الانتظار (Cooldown)", callback_data="admin_edit_cooldown")],
         [InlineKeyboardButton(text=auto_del_text, callback_data="admin_toggle_autodelete")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
@@ -767,11 +782,37 @@ async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
     )
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
-    
+
+# --- Start Message Settings ---
+@dp.callback_query(F.data == "admin_start_settings")
+async def cb_admin_start_settings(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await state.clear()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 تعديل نص رسالة الترحيب", callback_data="admin_edit_start_msg")],
+        [InlineKeyboardButton(text="🔘 تعديل اسم الزر الإضافي", callback_data="admin_edit_btn2_name")],
+        [InlineKeyboardButton(text="🔗 جعله رابط (URL)", callback_data="admin_edit_btn2_url"),
+         InlineKeyboardButton(text="💬 جعله رسالة نصية", callback_data="admin_edit_btn2_text")],
+        [InlineKeyboardButton(text="👁 معاينة رسالة الترحيب", callback_data="admin_preview_start")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_settings")]
+    ])
+    await callback.message.edit_text(
+        "⚙️ <b>إعدادات رسالة الترحيب (الخاص):</b>\n\nتتحكم هذه القائمة بالرسالة والأزرار التي تظهر للأعضاء عند بدء المحادثة مع البوت في الخاص.\nاختر ما تريد تعديله:", 
+        reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_preview_start")
+async def cb_admin_preview_start(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    bot_info = await bot.get_me()
+    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
+    await callback.message.answer(f"👁 <b>معاينة الترحيب:</b>\n\n{text}", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
 @dp.callback_query(F.data == "admin_edit_start_msg")
 async def cb_admin_edit_start_msg(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
-    await callback.message.answer("أرسل الآن رسالة الترحيب الجديدة التي ستظهر للأعضاء في الخاص عند الدخول للبوت وإرسال /start:\n(يمكنك استخدام HTML)\nلإلغاء الأمر أرسل /cancel")
+    await callback.message.answer("أرسل الآن رسالة الترحيب الجديدة التي ستظهر للأعضاء في الخاص عند إرسال /start:\n(يمكنك استخدام HTML)\nلإلغاء الأمر أرسل /cancel")
     await state.set_state(AdminEdit.waiting_for_start_msg)
     await callback.answer()
 
@@ -783,6 +824,66 @@ async def process_start_msg(message: types.Message, state: FSMContext):
         return
     await set_setting("start_message", message.text)
     await message.answer("✅ تم تحديث رسالة الترحيب بنجاح.")
+    await state.clear()
+
+@dp.callback_query(F.data == "admin_edit_btn2_name")
+async def cb_admin_edit_btn2_name(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await callback.message.answer("أرسل الآن الاسم الجديد للزر الإضافي (مثال: اشترك في الباقة).\nلإخفاء الزر تماماً أرسل /hide\nلإلغاء الأمر أرسل /cancel")
+    await state.set_state(AdminEdit.waiting_for_start_btn2_name)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_start_btn2_name)
+async def process_start_btn2_name(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("تم الإلغاء.")
+        await state.clear()
+        return
+    if message.text == '/hide':
+        await set_setting("start_btn2_name", "")
+        await message.answer("✅ تم إخفاء الزر الإضافي.")
+    else:
+        await set_setting("start_btn2_name", message.text)
+        await message.answer("✅ تم تحديث اسم الزر الإضافي.")
+    await state.clear()
+
+@dp.callback_query(F.data == "admin_edit_btn2_url")
+async def cb_admin_edit_btn2_url(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await callback.message.answer("أرسل الآن الرابط (يجب أن يبدأ بـ http أو https أو tg://):\nلإلغاء الأمر أرسل /cancel")
+    await state.set_state(AdminEdit.waiting_for_start_btn2_url)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_start_btn2_url)
+async def process_start_btn2_url(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("تم الإلغاء.")
+        await state.clear()
+        return
+    if not message.text.startswith(("http://", "https://", "tg://")):
+        await message.answer("❌ عذراً، الرابط غير صحيح. يجب أن يبدأ بـ http أو https أو tg://")
+        return
+    await set_setting("start_btn2_type", "url")
+    await set_setting("start_btn2_content", message.text)
+    await message.answer("✅ تم تحويل الزر الإضافي إلى رابط بنجاح.")
+    await state.clear()
+
+@dp.callback_query(F.data == "admin_edit_btn2_text")
+async def cb_admin_edit_btn2_text(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await callback.message.answer("أرسل الآن الرسالة النصية التي تريد ظهورها عند ضغط المستخدم على الزر:\nلإلغاء الأمر أرسل /cancel")
+    await state.set_state(AdminEdit.waiting_for_start_btn2_text)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_start_btn2_text)
+async def process_start_btn2_text(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("تم الإلغاء.")
+        await state.clear()
+        return
+    await set_setting("start_btn2_type", "text")
+    await set_setting("start_btn2_content", message.text)
+    await message.answer("✅ تم تحويل الزر الإضافي إلى رسالة نصية بنجاح.")
     await state.clear()
 
 @dp.callback_query(F.data == "admin_toggle_autodelete")
