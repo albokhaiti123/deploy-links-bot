@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 import aiosqlite
@@ -13,7 +13,7 @@ from aiogram.filters import CommandStart, Command, IS_MEMBER, IS_NOT_MEMBER, Cha
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated, InputPaidMediaPhoto, InputPaidMediaVideo
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter, TelegramForbiddenError
 
 load_dotenv()
@@ -76,6 +76,15 @@ async def init_db():
             )
         """)
         
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS broadcast_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                message_id INTEGER,
+                delete_at TIMESTAMP
+            )
+        """)
+        
         default_settings = {
             "promo_enabled": "true",
             "promo_text": "🔥 مرحبًا بك يا {user}!\nاكتشف خدماتنا ومحتوانا من خلال الرابط التالي.",
@@ -126,12 +135,19 @@ class AdminEdit(StatesGroup):
     waiting_for_cooldown = State()
     waiting_for_admin_id = State()
     waiting_for_media = State()
-    waiting_for_broadcast_users = State()
-    waiting_for_broadcast_groups = State()
     waiting_for_start_msg = State()
     waiting_for_start_btn2_name = State()
     waiting_for_start_btn2_url = State()
     waiting_for_start_btn2_text = State()
+
+class BroadcastWizard(StatesGroup):
+    target = State()
+    text = State()
+    media = State()
+    media_type_vip = State()
+    stars = State()
+    duration = State()
+    confirm = State()
 
 # --- Bot & Dispatcher ---
 bot = Bot(token=BOT_TOKEN) 
@@ -250,6 +266,25 @@ async def trigger_group_promo(message: types.Message, target_user: types.User):
     except TelegramAPIError as e:
         logger.error(f"Failed to send promo in {chat_id}: {e}")
 
+# --- Background Tasks ---
+async def auto_delete_broadcasts():
+    while True:
+        try:
+            await asyncio.sleep(60)
+            async with aiosqlite.connect(DB_NAME) as db:
+                cursor = await db.execute("SELECT id, chat_id, message_id FROM broadcast_messages WHERE delete_at <= ?", (datetime.now(),))
+                expired_messages = await cursor.fetchall()
+                for row in expired_messages:
+                    db_id, chat_id, message_id = row
+                    try:
+                        await bot.delete_message(chat_id, message_id)
+                    except TelegramAPIError:
+                        pass
+                    await db.execute("DELETE FROM broadcast_messages WHERE id = ?", (db_id,))
+                await db.commit()
+        except Exception as e:
+            logger.error(f"Error in auto_delete_broadcasts task: {e}")
+
 # --- Handlers ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -327,7 +362,7 @@ def get_admin_keyboard(promo_enabled: str, user_id: int) -> InlineKeyboardMarkup
         [InlineKeyboardButton(text="👥 المجموعات", callback_data="admin_groups"),
          InlineKeyboardButton(text="📊 الإحصائيات", callback_data="admin_stats")],
         [InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="admin_settings")],
-        [InlineKeyboardButton(text="📣 رسالة إذاعة", callback_data="admin_broadcast_menu")],
+        [InlineKeyboardButton(text="📣 ساحر الإذاعة (جديد ⭐️)", callback_data="admin_broadcast_menu")],
         [InlineKeyboardButton(text=toggle_text, callback_data="admin_toggle_promo")]
     ]
     
@@ -681,86 +716,207 @@ async def cb_admin_stats(callback: types.CallbackQuery):
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
 
-# --- Broadcast ---
+# --- Broadcast Wizard (VIP & Auto-delete) ---
 @dp.callback_query(F.data == "admin_broadcast_menu")
 async def cb_admin_broadcast_menu(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
     await state.clear()
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👥 إذاعة للمستخدمين (في الخاص)", callback_data="admin_broadcast_users")],
-        [InlineKeyboardButton(text="🌐 إذاعة للمجموعات", callback_data="admin_broadcast_groups")],
+        [InlineKeyboardButton(text="👥 للإدارة والمستخدمين (في الخاص)", callback_data="start_bw_users")],
+        [InlineKeyboardButton(text="🌐 للمجموعات فقط", callback_data="start_bw_groups")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
     ])
-    await callback.message.edit_text("📣 <b>خيارات الإذاعة:</b>\nاختر الوجهة التي تريد إرسال الإذاعة إليها:", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    await callback.message.edit_text("📣 <b>ساحر الإذاعة الجديد:</b>\n\nاختر الوجهة التي تريد بدء الإذاعة إليها:", reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
 
-@dp.callback_query(F.data == "admin_broadcast_users")
-async def cb_admin_broadcast_users(callback: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("start_bw_"))
+async def cb_start_bw(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id): return
-    await callback.message.answer("📢 أرسل الرسالة التي تريد إذاعتها لجميع المستخدمين (في الخاص):\nلإلغاء الأمر أرسل /cancel")
-    await state.set_state(AdminEdit.waiting_for_broadcast_users)
+    target = callback.data.split("_")[2]
+    await state.update_data(target=target)
+    await callback.message.answer("📝 <b>الخطوة 1:</b> أرسل النص الخاص بالإذاعة.\n(يمكنك إضافة روابط أو تنسيقات HTML)\nلإلغاء الأمر أرسل /cancel", parse_mode=ParseMode.HTML)
+    await state.set_state(BroadcastWizard.text)
     await callback.answer()
 
-@dp.callback_query(F.data == "admin_broadcast_groups")
-async def cb_admin_broadcast_groups(callback: types.CallbackQuery, state: FSMContext):
-    if not await is_admin(callback.from_user.id): return
-    await callback.message.answer("🌐 أرسل الرسالة التي تريد إذاعتها لجميع المجموعات النشطة:\nلإلغاء الأمر أرسل /cancel")
-    await state.set_state(AdminEdit.waiting_for_broadcast_groups)
-    await callback.answer()
-
-@dp.message(AdminEdit.waiting_for_broadcast_users)
-async def process_broadcast_users(message: types.Message, state: FSMContext):
+@dp.message(BroadcastWizard.text)
+async def process_bw_text(message: types.Message, state: FSMContext):
     if message.text == '/cancel':
-        await message.answer("تم الإلغاء.")
+        await message.answer("❌ تم الإلغاء.")
         await state.clear()
         return
         
-    status_msg = await message.answer("🚀 جاري الإرسال للمستخدمين، يرجى الانتظار...")
+    await state.update_data(text=message.html_text or message.text)
+    await message.answer("🖼 <b>الخطوة 2:</b> أرسل صورة أو فيديو لإرفاقه مع الإذاعة.\nإذا أردت إرسال الإذاعة كنص فقط دون وسائط، أرسل /skip\nلإلغاء الأمر أرسل /cancel", parse_mode=ParseMode.HTML)
+    await state.set_state(BroadcastWizard.media)
+
+@dp.message(BroadcastWizard.media, F.photo | F.video | F.text)
+async def process_bw_media(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+        
+    if message.text == '/skip':
+        await state.update_data(media_id=None, media_type=None)
+        await ask_duration(message, state)
+        return
+        
+    if message.photo:
+        await state.update_data(media_id=message.photo[-1].file_id, media_type="photo")
+    elif message.video:
+        await state.update_data(media_id=message.video.file_id, media_type="video")
+    else:
+        await message.answer("❌ يجب إرسال صورة أو فيديو، أو /skip، أو /cancel.")
+        return
+        
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 مجانية (مفتوحة)", callback_data="media_free")],
+        [InlineKeyboardButton(text="⭐️ مدفوعة (VIP - بنجوم تيليجرام)", callback_data="media_vip")]
+    ])
+    await message.answer("💎 <b>الخطوة 3:</b> هل تريد أن يكون هذا المحتوى مجانياً أم مدفوعاً (مظلل يفتح بالنجوم)؟", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await state.set_state(BroadcastWizard.media_type_vip)
+
+@dp.callback_query(BroadcastWizard.media_type_vip)
+async def cb_bw_media_type(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    if callback.data == "media_free":
+        await state.update_data(is_vip=False, stars=0)
+        await ask_duration(callback.message, state)
+    elif callback.data == "media_vip":
+        await state.update_data(is_vip=True)
+        await callback.message.answer("⭐️ كم عدد النجوم المطلوبة لفتح المحتوى؟ (أرسل رقماً بين 1 و 2500):")
+        await state.set_state(BroadcastWizard.stars)
+    await callback.answer()
+
+@dp.message(BroadcastWizard.stars)
+async def process_bw_stars(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+        
+    if not message.text.isdigit():
+        return await message.answer("❌ يرجى إرسال أرقام فقط (مثلاً 50).")
+        
+    stars = int(message.text)
+    if stars < 1 or stars > 2500:
+        return await message.answer("❌ يجب أن يكون العدد بين 1 و 2500.")
+        
+    await state.update_data(stars=stars)
+    await ask_duration(message, state)
     
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT telegram_id FROM users") as cursor:
-            users = await cursor.fetchall()
-            
-    success = 0
-    for u in users:
-        try:
-            await message.copy_to(u[0])
-            success += 1
-            await asyncio.sleep(0.05) # Prevent flood limit
-        except Exception:
-            pass
-            
-    await status_msg.edit_text(f"✅ تمت الإذاعة بنجاح لـ {success} مستخدم.")
+async def ask_duration(message: types.Message, state: FSMContext):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="لا تحذف أبداً", callback_data="duration_0")],
+        [InlineKeyboardButton(text="بعد 10 دقائق", callback_data="duration_10"),
+         InlineKeyboardButton(text="بعد 30 دقيقة", callback_data="duration_30")],
+        [InlineKeyboardButton(text="بعد 1 ساعة", callback_data="duration_60"),
+         InlineKeyboardButton(text="بعد 6 ساعات", callback_data="duration_360")],
+        [InlineKeyboardButton(text="بعد 24 ساعة", callback_data="duration_1440")]
+    ])
+    await message.answer("⏳ <b>الخطوة ما قبل الأخيرة:</b> متى تريد حذف الإذاعة تلقائياً؟", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await state.set_state(BroadcastWizard.duration)
+
+@dp.callback_query(BroadcastWizard.duration)
+async def cb_bw_duration(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    mins = int(callback.data.split("_")[1])
+    await state.update_data(duration_mins=mins)
+    
+    data = await state.get_data()
+    target_ar = "المستخدمين في الخاص" if data['target'] == 'users' else "المجموعات"
+    dur_ar = "لا تُحذف" if mins == 0 else f"تُحذف بعد {mins} دقيقة"
+    vip_ar = f"مدفوعة بـ {data.get('stars', 0)} نجمة ⭐️" if data.get('is_vip') else "مجانية"
+    
+    summary = (
+        f"📋 <b>ملخص الإذاعة النهائي:</b>\n\n"
+        f"👥 <b>الوجهة:</b> {target_ar}\n"
+        f"🖼 <b>الوسائط:</b> {'نعم' if data.get('media_id') else 'لا'} ({vip_ar})\n"
+        f"⏳ <b>التدمير الذاتي:</b> {dur_ar}\n\n"
+        f"هل أنت متأكد من الإرسال الآن؟"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ إرسال الآن", callback_data="confirm_send")],
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel_wizard")]
+    ])
+    await callback.message.answer(summary, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await state.set_state(BroadcastWizard.confirm)
+    await callback.answer()
+
+@dp.callback_query(BroadcastWizard.confirm)
+async def cb_bw_confirm(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    if callback.data == "cancel_wizard":
+        await callback.message.answer("❌ تم إلغاء الإذاعة.")
+        await state.clear()
+        return
+        
+    data = await state.get_data()
     await state.clear()
-
-@dp.message(AdminEdit.waiting_for_broadcast_groups)
-async def process_broadcast_groups(message: types.Message, state: FSMContext):
-    if message.text == '/cancel':
-        await message.answer("تم الإلغاء.")
-        await state.clear()
-        return
-        
-    status_msg = await message.answer("🚀 جاري الإرسال للمجموعات، يرجى الانتظار...")
     
+    status_msg = await callback.message.answer("🚀 جاري الإرسال، يرجى الانتظار (قد يستغرق بعض الوقت لتجنب الحظر)...")
+    asyncio.create_task(execute_broadcast(data, status_msg))
+    await callback.answer()
+    
+async def execute_broadcast(data: dict, status_msg: types.Message):
+    target = data['target']
+    if target == 'users':
+        query = "SELECT telegram_id FROM users"
+    else:
+        query = "SELECT chat_id FROM groups WHERE status='active'"
+        
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT chat_id FROM groups WHERE status='active'") as cursor:
-            groups = await cursor.fetchall()
+        async with db.execute(query) as cursor:
+            targets = await cursor.fetchall()
             
     success = 0
-    for g in groups:
+    dur = data.get('duration_mins', 0)
+    delete_at = datetime.now() + timedelta(minutes=dur) if dur > 0 else None
+    
+    for t in targets:
+        chat_id = t[0]
         try:
-            await message.copy_to(g[0])
+            sent_msg = None
+            if data.get('is_vip') and data.get('media_id'):
+                if data['media_type'] == 'photo':
+                    media_payload = [InputPaidMediaPhoto(media=data['media_id'])]
+                else:
+                    media_payload = [InputPaidMediaVideo(media=data['media_id'])]
+                    
+                sent_msg = await bot.send_paid_media(
+                    chat_id=chat_id,
+                    star_count=data['stars'],
+                    media=media_payload,
+                    caption=data['text'],
+                    parse_mode=ParseMode.HTML
+                )
+            elif data.get('media_id'):
+                if data['media_type'] == 'photo':
+                    sent_msg = await bot.send_photo(chat_id, photo=data['media_id'], caption=data['text'], parse_mode=ParseMode.HTML)
+                else:
+                    sent_msg = await bot.send_video(chat_id, video=data['media_id'], caption=data['text'], parse_mode=ParseMode.HTML)
+            else:
+                sent_msg = await bot.send_message(chat_id, data['text'], parse_mode=ParseMode.HTML)
+                
+            if sent_msg and delete_at:
+                async with aiosqlite.connect(DB_NAME) as db2:
+                    await db2.execute("INSERT INTO broadcast_messages (chat_id, message_id, delete_at) VALUES (?, ?, ?)",
+                                      (chat_id, sent_msg.message_id, delete_at))
+                    await db2.commit()
+                    
             success += 1
-            await asyncio.sleep(0.05) # Prevent flood limit
         except TelegramForbiddenError:
-            async with aiosqlite.connect(DB_NAME) as db2:
-                await db2.execute("UPDATE groups SET status='inactive' WHERE chat_id=?", (g[0],))
-                await db2.commit()
-        except Exception:
+            if target == 'groups':
+                async with aiosqlite.connect(DB_NAME) as db2:
+                    await db2.execute("UPDATE groups SET status='inactive' WHERE chat_id=?", (chat_id,))
+                    await db2.commit()
+        except Exception as e:
             pass
-            
-    await status_msg.edit_text(f"✅ تمت الإذاعة بنجاح لـ {success} مجموعة.")
-    await state.clear()
+        
+        await asyncio.sleep(0.05) # Prevent flood limit
+        
+    await status_msg.edit_text(f"✅ اكتملت المهمة! تمت الإذاعة بنجاح إلى {success} جهة.")
+
 
 # --- Settings ---
 @dp.callback_query(F.data == "admin_settings")
@@ -953,6 +1109,9 @@ async def main():
         
     await init_db()
     logger.info("Database initialized.")
+    
+    # Start background task for auto-deleting broadcasts
+    asyncio.create_task(auto_delete_broadcasts())
     
     try:
         await dp.start_polling(bot)
