@@ -95,6 +95,9 @@ async def init_db():
             "promo_media_type": "",
             "auto_delete": "false",
             "show_add_bot_button": "true",
+            "promo_is_vip": "false",
+            "promo_stars": "50",
+            "promo_post_payment_msg": "✅ شكراً لك! لقد تم الدفع بنجاح.",
             "start_message": "🤖 أهلاً بك في البوت!\n\nهذا البوت يساعدك على إضافة رسائل ترويجية إلى مجموعتك عند انضمام أعضاء جدد.\nأضف البوت إلى مجموعتك وسيبدأ العمل تلقائياً بناءً على إعدادات الإدارة.",
             "start_btn2_name": "ℹ️ طريقة الاستخدام",
             "start_btn2_type": "text",
@@ -139,6 +142,8 @@ class AdminEdit(StatesGroup):
     waiting_for_start_btn2_name = State()
     waiting_for_start_btn2_url = State()
     waiting_for_start_btn2_text = State()
+    waiting_for_promo_stars = State()
+    waiting_for_post_payment_msg = State()
 
 class BroadcastWizard(StatesGroup):
     target = State()
@@ -216,6 +221,9 @@ async def trigger_group_promo(message: types.Message, target_user: types.User):
     promo_media_type = await get_setting("promo_media_type")
     show_add_bot_button = await get_setting("show_add_bot_button")
     auto_delete = await get_setting("auto_delete")
+    is_vip = await get_setting("promo_is_vip") == "true"
+    stars_val = await get_setting("promo_stars")
+    stars = int(stars_val) if stars_val and stars_val.isdigit() else 50
     
     # Format text with mention
     user_name = target_user.first_name.replace('<', '&lt;').replace('>', '&gt;')
@@ -237,17 +245,43 @@ async def trigger_group_promo(message: types.Message, target_user: types.User):
     
     try:
         sent_msg = None
-        if promo_media_id and promo_media_type == "photo":
-            sent_msg = await message.answer_photo(photo=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-        elif promo_media_id and promo_media_type == "video":
-            sent_msg = await message.answer_video(video=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        if is_vip:
+            if promo_media_id:
+                # Paid Media
+                media_payload = [InputPaidMediaPhoto(media=promo_media_id)] if promo_media_type == 'photo' else [InputPaidMediaVideo(media=promo_media_id)]
+                sent_msg = await bot.send_paid_media(
+                    chat_id=chat_id,
+                    star_count=stars,
+                    media=media_payload,
+                    caption=promo_text_formatted,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                # Paid Text (Invoice)
+                text_msg = await bot.send_message(chat_id, promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                prices = [types.LabeledPrice(label="فتح المحتوى السري", amount=stars)]
+                sent_msg = await bot.send_invoice(
+                    chat_id=chat_id,
+                    title="محتوى مدفوع (VIP)",
+                    description="قم بدفع النجوم لاستلام رسالة ما بعد الدفع فوراً.",
+                    payload="paid_promo",
+                    provider_token="", 
+                    currency="XTR",
+                    prices=prices,
+                    reply_to_message_id=text_msg.message_id
+                )
         else:
-            sent_msg = await message.answer(
-                promo_text_formatted,
-                reply_markup=keyboard,
-                parse_mode=ParseMode.HTML,
-                link_preview_options=types.LinkPreviewOptions(is_disabled=True)
-            )
+            if promo_media_id and promo_media_type == "photo":
+                sent_msg = await message.answer_photo(photo=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            elif promo_media_id and promo_media_type == "video":
+                sent_msg = await message.answer_video(video=promo_media_id, caption=promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            else:
+                sent_msg = await message.answer(
+                    promo_text_formatted,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                    link_preview_options=types.LinkPreviewOptions(is_disabled=True)
+                )
             
         if sent_msg:
             async with aiosqlite.connect(DB_NAME) as db:
@@ -314,6 +348,22 @@ async def cb_start_back(callback: types.CallbackQuery):
     bot_info = await bot.get_me()
     text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+# --- Payment Handlers ---
+@dp.pre_checkout_query(lambda query: query.invoice_payload == "paid_promo")
+async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def process_successful_payment(message: types.Message):
+    if message.successful_payment.invoice_payload == "paid_promo":
+        post_msg = await get_setting("promo_post_payment_msg")
+        if not post_msg:
+            post_msg = "✅ تم تأكيد الدفع بنجاح!"
+        try:
+            await message.reply(f"⭐️ <b>تم تأكيد الدفع!</b>\n\n{post_msg}", parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"Failed to send post payment msg: {e}")
 
 # --- Group Events ---
 @dp.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> IS_MEMBER))
@@ -403,73 +453,6 @@ async def cb_admin_toggle_promo(callback: types.CallbackQuery):
     status_text = "تم تشغيل الترويج" if new_val == "true" else "تم إيقاف الترويج"
     await callback.answer(status_text)
 
-# --- Manage Admins ---
-@dp.callback_query(F.data == "admin_manage_admins")
-async def cb_admin_manage_admins(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID: 
-        return
-    await state.clear()
-    
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT telegram_id FROM admins") as cursor:
-            admins = await cursor.fetchall()
-            
-    keyboard = [[InlineKeyboardButton(text="➕ إضافة مشرف", callback_data="admin_add_admin")]]
-    
-    text = "👑 <b>إدارة المشرفين</b>\n\nالمشرفون الحاليون:\n"
-    text += f"1. {ADMIN_ID} (المالك)\n"
-    
-    for idx, adm in enumerate(admins, start=2):
-        text += f"{idx}. {adm[0]}\n"
-        keyboard.append([InlineKeyboardButton(text=f"❌ حذف {adm[0]}", callback_data=f"admin_del_admin_{adm[0]}")])
-        
-    keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")])
-    
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode=ParseMode.HTML)
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_add_admin")
-async def cb_admin_add_admin(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    await callback.message.answer("أرسل الآن Telegram ID للمشرف الجديد (أرقام فقط):\nلإلغاء الأمر أرسل /cancel")
-    await state.set_state(AdminEdit.waiting_for_admin_id)
-    await callback.answer()
-
-@dp.message(AdminEdit.waiting_for_admin_id)
-async def process_admin_id(message: types.Message, state: FSMContext):
-    if message.text == '/cancel':
-        await message.answer("تم الإلغاء.")
-        await state.clear()
-        return
-    if not message.text.isdigit():
-        await message.answer("❌ يرجى إرسال ID صحيح (أرقام فقط).\nحاول مجدداً أو أرسل /cancel")
-        return
-        
-    new_admin_id = int(message.text)
-    if new_admin_id == ADMIN_ID:
-        await message.answer("❌ هذا الـ ID خاص بالمالك.")
-        return
-        
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("INSERT OR IGNORE INTO admins (telegram_id, added_at) VALUES (?, ?)", (new_admin_id, datetime.now()))
-        await db.commit()
-        
-    await message.answer(f"✅ تم إضافة المشرف {new_admin_id} بنجاح.")
-    await state.clear()
-
-@dp.callback_query(F.data.startswith("admin_del_admin_"))
-async def cb_admin_del_admin(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    del_id = int(callback.data.split("_")[3])
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("DELETE FROM admins WHERE telegram_id = ?", (del_id,))
-        await db.commit()
-        
-    await callback.answer(f"تم حذف المشرف {del_id}", show_alert=True)
-    await cb_admin_manage_admins(callback, state)
-
 # --- Promo Settings ---
 @dp.callback_query(F.data == "admin_promo_settings")
 async def cb_admin_promo_settings(callback: types.CallbackQuery, state: FSMContext):
@@ -479,12 +462,17 @@ async def cb_admin_promo_settings(callback: types.CallbackQuery, state: FSMConte
     show_bot_btn = await get_setting("show_add_bot_button")
     btn_text = "🤖 إخفاء زر البوت" if show_bot_btn == "true" else "🤖 إظهار زر البوت"
     
+    is_vip = await get_setting("promo_is_vip") == "true"
+    stars = await get_setting("promo_stars") or "50"
+    vip_text = f"💎 الإعلان: مدفوع ({stars}⭐️)" if is_vip else "🟢 الإعلان: مجاني"
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 تعديل النص", callback_data="admin_edit_text"),
          InlineKeyboardButton(text="🖼️ تعديل الوسائط", callback_data="admin_edit_media")],
-        [InlineKeyboardButton(text="🔗 تعديل الرابط", callback_data="admin_edit_url"),
-         InlineKeyboardButton(text="🔘 تعديل الزر", callback_data="admin_edit_button")],
-        [InlineKeyboardButton(text=btn_text, callback_data="admin_toggle_bot_btn")],
+        [InlineKeyboardButton(text="🔗 تعديل الرابط / الزر", callback_data="admin_edit_button"),
+         InlineKeyboardButton(text=btn_text, callback_data="admin_toggle_bot_btn")],
+        [InlineKeyboardButton(text=vip_text, callback_data="admin_toggle_promo_vip")],
+        [InlineKeyboardButton(text="💬 رسالة ما بعد الدفع", callback_data="admin_edit_post_payment_msg")],
         [InlineKeyboardButton(text="👁 معاينة الإعلان", callback_data="admin_preview_promo")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
     ])
@@ -493,8 +481,59 @@ async def cb_admin_promo_settings(callback: types.CallbackQuery, state: FSMConte
         "يمكنك استخدام <code>{user}</code> في النص ليتم استبدالها تلقائياً بـ 'منشن' للعضو الجديد.\n\n"
         "اختر ما تريد تعديله:"
     )
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    except TelegramAPIError:
+        pass
     await callback.answer()
+
+@dp.callback_query(F.data == "admin_toggle_promo_vip")
+async def cb_admin_toggle_promo_vip(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    is_vip = await get_setting("promo_is_vip") == "true"
+    if is_vip:
+        await set_setting("promo_is_vip", "false")
+        await cb_admin_promo_settings(callback, state)
+    else:
+        await callback.message.answer("⭐️ أرسل عدد نجوم تيليجرام المطلوبة لهذا الإعلان (مثلاً 50):\nلإلغاء الأمر أرسل /cancel")
+        await state.set_state(AdminEdit.waiting_for_promo_stars)
+        await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_promo_stars)
+async def process_promo_stars(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    if not message.text.isdigit():
+        return await message.answer("❌ يرجى إرسال أرقام فقط.")
+        
+    await set_setting("promo_stars", message.text)
+    await set_setting("promo_is_vip", "true")
+    await message.answer(f"✅ تم تحويل الإعلان إلى مدفوع بقيمة {message.text} ⭐️")
+    await state.clear()
+
+@dp.callback_query(F.data == "admin_edit_post_payment_msg")
+async def cb_admin_edit_post_payment_msg(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await callback.message.answer(
+        "💬 أرسل الآن رسالة تأكيد الدفع (التي سيستلمها المستخدم بعد دفع النجوم):\n(يمكنك وضع روابط أو نصوص)\n"
+        "ملاحظة: تليجرام يفتح الصور المدفوعة تلقائياً ولا يرسل إشعاراً للبوت بذلك، لذلك هذه الرسالة ستعمل بشكل أساسي مع (الإعلانات النصية المدفوعة الفواتير).\n"
+        "لإلغاء الأمر أرسل /cancel"
+    )
+    await state.set_state(AdminEdit.waiting_for_post_payment_msg)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_post_payment_msg)
+async def process_post_payment_msg(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    await set_setting("promo_post_payment_msg", message.html_text or message.text)
+    await message.answer("✅ تم حفظ رسالة ما بعد الدفع.")
+    await state.clear()
 
 @dp.callback_query(F.data == "admin_toggle_bot_btn")
 async def cb_admin_toggle_bot_btn(callback: types.CallbackQuery, state: FSMContext):
@@ -516,6 +555,8 @@ async def cb_admin_preview_promo(callback: types.CallbackQuery):
     promo_media_id = await get_setting("promo_media_id")
     promo_media_type = await get_setting("promo_media_type")
     show_bot_btn = await get_setting("show_add_bot_button")
+    is_vip = await get_setting("promo_is_vip") == "true"
+    stars = int(await get_setting("promo_stars") or 50)
     
     bot_info = await bot.get_me()
     
@@ -526,14 +567,32 @@ async def cb_admin_preview_promo(callback: types.CallbackQuery):
     keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_bot_btn)
     
     try:
-        if promo_media_id and promo_media_type == "photo":
-            await callback.message.answer_photo(photo=promo_media_id, caption=f"👁 <b>معاينة:</b>\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
-        elif promo_media_id and promo_media_type == "video":
-            await callback.message.answer_video(video=promo_media_id, caption=f"👁 <b>معاينة:</b>\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        if is_vip:
+            if promo_media_id:
+                media_payload = [InputPaidMediaPhoto(media=promo_media_id)] if promo_media_type == 'photo' else [InputPaidMediaVideo(media=promo_media_id)]
+                await bot.send_paid_media(chat_id=callback.from_user.id, star_count=stars, media=media_payload, caption=f"👁 معاينة:\n\n{promo_text_formatted}", parse_mode=ParseMode.HTML)
+            else:
+                text_msg = await callback.message.answer(f"👁 معاينة:\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+                prices = [types.LabeledPrice(label="فتح المحتوى السري", amount=stars)]
+                await bot.send_invoice(
+                    chat_id=callback.from_user.id,
+                    title="محتوى مدفوع (VIP)",
+                    description="قم بدفع النجوم لاستلام رسالة ما بعد الدفع فوراً.",
+                    payload="paid_promo",
+                    provider_token="", 
+                    currency="XTR",
+                    prices=prices,
+                    reply_to_message_id=text_msg.message_id
+                )
         else:
-            await callback.message.answer(f"👁 <b>معاينة:</b>\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            if promo_media_id and promo_media_type == "photo":
+                await callback.message.answer_photo(photo=promo_media_id, caption=f"👁 <b>معاينة:</b>\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            elif promo_media_id and promo_media_type == "video":
+                await callback.message.answer_video(video=promo_media_id, caption=f"👁 <b>معاينة:</b>\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            else:
+                await callback.message.answer(f"👁 <b>معاينة:</b>\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
     except Exception as e:
-        await callback.message.answer(f"❌ حدث خطأ في المعاينة. تأكد من صحة الرابط أو النص.\nالخطأ: {e}")
+        await callback.message.answer(f"❌ حدث خطأ في المعاينة. تأكد من صحة الإعدادات.\nالخطأ: {e}")
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_edit_text")
@@ -625,96 +684,6 @@ async def process_promo_button(message: types.Message, state: FSMContext):
     await set_setting("promo_button_text", message.text)
     await message.answer("✅ تم تحديث نص الزر بنجاح.")
     await state.clear()
-
-# --- Groups ---
-@dp.callback_query(F.data == "admin_groups")
-async def cb_admin_groups(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id):
-        return
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT COUNT(*) FROM groups WHERE status='active'") as cursor:
-            active_count = (await cursor.fetchone())[0]
-        async with db.execute("SELECT COUNT(*) FROM groups WHERE status='inactive'") as cursor:
-            inactive_count = (await cursor.fetchone())[0]
-            
-    text = (
-        "👥 <b>إحصائيات المجموعات:</b>\n\n"
-        f"✅ المجموعات النشطة: {active_count}\n"
-        f"❌ المجموعات غير النشطة: {inactive_count}"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚙️ إدارة المجموعات (تصفح/مغادرة)", callback_data="admin_list_groups_0")],
-        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("admin_list_groups_"))
-async def cb_admin_list_groups(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id): return
-    page = int(callback.data.split("_")[3])
-    offset = page * 5
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT chat_id, title FROM groups WHERE status='active' LIMIT 5 OFFSET ?", (offset,)) as cursor:
-            groups = await cursor.fetchall()
-        async with db.execute("SELECT COUNT(*) FROM groups WHERE status='active'") as cursor:
-            total = (await cursor.fetchone())[0]
-            
-    keyboard = []
-    for g in groups:
-        title = g[1][:20] if g[1] else "مجموعة"
-        keyboard.append([InlineKeyboardButton(text=f"🚪 مغادرة: {title}", callback_data=f"admin_leave_{g[0]}")])
-        
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton(text="⬅️ السابق", callback_data=f"admin_list_groups_{page-1}"))
-    if offset + 5 < total:
-        nav.append(InlineKeyboardButton(text="التالي ➡️", callback_data=f"admin_list_groups_{page+1}"))
-    if nav:
-        keyboard.append(nav)
-        
-    keyboard.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_groups")])
-    await callback.message.edit_text("⚙️ <b>تصفح المجموعات:</b>\n\nاضغط على أي مجموعة لمغادرتها فوراً:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode=ParseMode.HTML)
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("admin_leave_"))
-async def cb_admin_leave(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id): return
-    chat_id = int(callback.data.split("_")[2])
-    try:
-        await bot.leave_chat(chat_id)
-        await callback.answer("✅ تمت مغادرة المجموعة بنجاح", show_alert=True)
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute("UPDATE groups SET status='inactive' WHERE chat_id=?", (chat_id,))
-            await db.commit()
-    except Exception as e:
-        await callback.answer(f"❌ لم أتمكن من المغادرة: {e}", show_alert=True)
-    await cb_admin_groups(callback)
-
-# --- Stats ---
-@dp.callback_query(F.data == "admin_stats")
-async def cb_admin_stats(callback: types.CallbackQuery):
-    if not await is_admin(callback.from_user.id):
-        return
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT COUNT(*) FROM users") as cursor:
-            users_count = (await cursor.fetchone())[0]
-        async with db.execute("SELECT COUNT(*) FROM events WHERE event_type='promo_sent'") as cursor:
-            promos_count = (await cursor.fetchone())[0]
-        
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        async with db.execute("SELECT COUNT(*) FROM events WHERE event_type='promo_sent' AND date(created_at) = ?", (today_str,)) as cursor:
-            today_promos = (await cursor.fetchone())[0]
-            
-    text = (
-        "📊 <b>الإحصائيات:</b>\n\n"
-        f"👥 المستخدمون المسجلون: {users_count}\n"
-        f"📨 إجمالي الإعلانات المرسلة: {promos_count}\n"
-        f"📅 إعلانات اليوم: {today_promos}\n"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-    await callback.answer()
 
 # --- Broadcast Wizard (VIP & Auto-delete) ---
 @dp.callback_query(F.data == "admin_broadcast_menu")
