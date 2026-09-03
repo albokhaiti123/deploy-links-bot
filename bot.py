@@ -1091,12 +1091,20 @@ async def main():
     # Start background task for auto-deleting broadcasts
     asyncio.create_task(auto_delete_broadcasts())
     
-    try:
-        # drop_pending_updates=True: skips any poisonous/unsupported updates
-        # that accumulated while the bot was stopped, preventing startup crash.
-        await dp.start_polling(bot, drop_pending_updates=True)
-    finally:
-        await bot.session.close()
+    # Self-Healing Polling Loop:
+    # Catches pydantic validation errors caused by unknown Telegram API updates
+    # drops the poisonous update, and restarts polling automatically.
+    while True:
+        try:
+            logger.info("Starting bot polling...")
+            await dp.start_polling(bot, drop_pending_updates=True)
+            break  # If polling stops gracefully, break the loop
+        except Exception as e:
+            logger.error(f"Critical Polling Error (Poisonous Update): {e}")
+            logger.info("Restarting polling in 3 seconds to auto-clean...")
+            await asyncio.sleep(3)
+            
+    await bot.session.close()
 
 if __name__ == "__main__":
     try:
