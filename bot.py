@@ -1068,6 +1068,15 @@ async def process_cooldown(message: types.Message, state: FSMContext):
     await message.answer(f"✅ تم تحديث مدة الانتظار إلى {message.text} ثانية.")
     await state.clear()
 
+# --- Global Error Handler ---
+# This silently catches unknown/unsupported Telegram update types (e.g. new RichText fields)
+# and prevents the bot from crashing when Telegram adds new API features.
+@dp.errors()
+async def global_error_handler(event: types.ErrorEvent) -> bool:
+    logger.warning(f"Caught unhandled error: {event.exception.__class__.__name__}: {event.exception}")
+    # Return True to mark the error as handled and prevent crash
+    return True
+
 async def main():
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN is not set in .env")
@@ -1083,7 +1092,9 @@ async def main():
     asyncio.create_task(auto_delete_broadcasts())
     
     try:
-        await dp.start_polling(bot)
+        # drop_pending_updates=True: skips any poisonous/unsupported updates
+        # that accumulated while the bot was stopped, preventing startup crash.
+        await dp.start_polling(bot, drop_pending_updates=True)
     finally:
         await bot.session.close()
 
