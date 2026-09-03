@@ -1068,6 +1068,162 @@ async def process_cooldown(message: types.Message, state: FSMContext):
     await message.answer(f"✅ تم تحديث مدة الانتظار إلى {message.text} ثانية.")
     await state.clear()
 
+# --- Stats Handler ---
+@dp.callback_query(F.data == "admin_stats")
+async def cb_admin_stats(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+            total_users = (await cursor.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM groups WHERE status='active'") as cursor:
+            active_groups = (await cursor.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM groups") as cursor:
+            total_groups = (await cursor.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM events WHERE event_type='promo_sent'") as cursor:
+            total_promos = (await cursor.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='promo_sent' AND created_at >= datetime('now', '-1 day')"
+        ) as cursor:
+            promos_today = (await cursor.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', '-1 day')"
+        ) as cursor:
+            users_today = (await cursor.fetchone())[0]
+
+    text = (
+        "📊 <b>الإحصائيات العامة</b>\n"
+        "━━━━━━━━━━━━━━\n\n"
+        f"👤 <b>إجمالي المستخدمين:</b> {total_users}\n"
+        f"👤 <b>مستخدمون جدد (آخر 24س):</b> {users_today}\n\n"
+        f"👥 <b>إجمالي المجموعات:</b> {total_groups}\n"
+        f"✅ <b>المجموعات النشطة:</b> {active_groups}\n\n"
+        f"📢 <b>إجمالي الإعلانات المرسلة:</b> {total_promos}\n"
+        f"📢 <b>إعلانات اليوم (آخر 24س):</b> {promos_today}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+# --- Groups Handler ---
+@dp.callback_query(F.data == "admin_groups")
+async def cb_admin_groups(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT chat_id, title, status, added_at FROM groups ORDER BY added_at DESC LIMIT 20"
+        ) as cursor:
+            groups = await cursor.fetchall()
+
+    if not groups:
+        text = "👥 <b>المجموعات</b>\n━━━━━━━━━━━━━━\n\nلا توجد مجموعات مسجلة بعد."
+    else:
+        lines = ["👥 <b>قائمة المجموعات (آخر 20)</b>\n━━━━━━━━━━━━━━\n"]
+        for chat_id, title, status, added_at in groups:
+            icon = "✅" if status == "active" else "❌"
+            date_str = added_at[:10] if added_at else "غير معروف"
+            lines.append(f"{icon} <b>{title or 'بدون اسم'}</b>\n   🆔 <code>{chat_id}</code> | 📅 {date_str}")
+        text = "\n\n".join(lines)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except TelegramAPIError:
+        # Message too long, send summary instead
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute("SELECT COUNT(*) FROM groups WHERE status='active'") as cursor:
+                active = (await cursor.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM groups") as cursor:
+                total = (await cursor.fetchone())[0]
+        await callback.message.edit_text(
+            f"👥 <b>المجموعات</b>\n━━━━━━━━━━━━━━\n\n"
+            f"✅ نشطة: {active}\n❌ غير نشطة: {total - active}\n📊 الإجمالي: {total}",
+            reply_markup=kb, parse_mode=ParseMode.HTML
+        )
+    await callback.answer()
+
+# --- Manage Admins Handler ---
+@dp.callback_query(F.data == "admin_manage_admins")
+async def cb_admin_manage_admins(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔️ هذا القسم للمالك الرئيسي فقط.", show_alert=True)
+        return
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT telegram_id, added_at FROM admins") as cursor:
+            admins = await cursor.fetchall()
+
+    lines = ["👑 <b>قائمة المشرفين</b>\n━━━━━━━━━━━━━━\n"]
+    if admins:
+        for admin_id, added_at in admins:
+            date_str = added_at[:10] if added_at else "غير معروف"
+            lines.append(f"• <code>{admin_id}</code> | 📅 {date_str}")
+    else:
+        lines.append("لا يوجد مشرفون مضافون حتى الآن.")
+
+    text = "\n".join(lines)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ إضافة مشرف", callback_data="admin_add_admin"),
+         InlineKeyboardButton(text="➖ حذف مشرف", callback_data="admin_remove_admin")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_add_admin")
+async def cb_admin_add_admin(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔️ هذا القسم للمالك الرئيسي فقط.", show_alert=True)
+        return
+    await callback.message.answer("أرسل الآن <b>ID تيليجرام</b> للمشرف الجديد (أرقام فقط):\nلإلغاء الأمر أرسل /cancel", parse_mode=ParseMode.HTML)
+    await state.set_state(AdminEdit.waiting_for_admin_id)
+    await state.update_data(admin_action="add")
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_remove_admin")
+async def cb_admin_remove_admin(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔️ هذا القسم للمالك الرئيسي فقط.", show_alert=True)
+        return
+    await callback.message.answer("أرسل الآن <b>ID تيليجرام</b> للمشرف الذي تريد حذفه:\nلإلغاء الأمر أرسل /cancel", parse_mode=ParseMode.HTML)
+    await state.set_state(AdminEdit.waiting_for_admin_id)
+    await state.update_data(admin_action="remove")
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_admin_id)
+async def process_admin_id(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    if not message.text.isdigit():
+        await message.answer("❌ يرجى إرسال أرقام فقط (ID تيليجرام).")
+        return
+    data = await state.get_data()
+    action = data.get("admin_action", "add")
+    target_id = int(message.text)
+    if target_id == ADMIN_ID:
+        await message.answer("⛔️ لا يمكنك تعديل صلاحيات المالك الرئيسي.")
+        await state.clear()
+        return
+    async with aiosqlite.connect(DB_NAME) as db:
+        if action == "add":
+            await db.execute(
+                "INSERT OR IGNORE INTO admins (telegram_id, added_at) VALUES (?, ?)",
+                (target_id, datetime.now())
+            )
+            await db.commit()
+            await message.answer(f"✅ تمت إضافة <code>{target_id}</code> كمشرف بنجاح.", parse_mode=ParseMode.HTML)
+        else:
+            await db.execute("DELETE FROM admins WHERE telegram_id = ?", (target_id,))
+            await db.commit()
+            await message.answer(f"✅ تمت إزالة <code>{target_id}</code> من المشرفين.", parse_mode=ParseMode.HTML)
+    await state.clear()
+
 # --- Global Error Handler ---
 # This silently catches unknown/unsupported Telegram update types (e.g. new RichText fields)
 # and prevents the bot from crashing when Telegram adds new API features.
