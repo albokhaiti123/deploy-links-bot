@@ -1,83 +1,240 @@
-# Telegram Promotional Groups Bot
+# 🤖 Deploy Links Bot — بوت الترويج الذكي
 
-A Telegram bot designed to send a customizable promotional message when new members join groups it has been added to. 
-The bot features anti-spam (cooldowns) and an in-Telegram admin panel.
+<div align="center">
 
-## Features
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![aiogram](https://img.shields.io/badge/aiogram-3.31-009DFF?style=for-the-badge&logo=telegram&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-3-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
+![License](https://img.shields.io/badge/License-Private-red?style=for-the-badge)
 
-- **Welcome Promos**: Sends a promotional message when new users join.
-- **Admin Dashboard**: Change promo text, URL, button text, and rate limits entirely inside Telegram.
-- **Anti-Spam / Rate Limiting**: Cooldown mechanism per group to avoid spamming multiple joining members.
-- **SQLite Database**: Simple and robust storage using `aiosqlite`.
-- **Bot Promotion**: Built-in deep linking button allowing others to easily add the bot to their own groups.
+**بوت تيليجرام احترافي لإدارة الترويج والإعلانات داخل المجموعات، مزود بلوحة تحكم كاملة من داخل تيليجرام.**
 
-## Requirements
+</div>
 
-- Python 3.11+
-- Requirements listed in `requirements.txt` (`aiogram 3.x`, `aiosqlite`, `python-dotenv`)
+---
 
-## Setup Instructions
+## 📋 جدول المحتويات
 
-1. **Create the Bot via BotFather**:
-   - Go to [@BotFather](https://t.me/BotFather) on Telegram.
-   - Send `/newbot` and follow the instructions to create your bot.
-   - Copy the HTTP API Token.
+- [نظرة عامة](#-نظرة-عامة)
+- [المميزات الحالية](#-المميزات-الحالية)
+- [متطلبات التشغيل](#-متطلبات-التشغيل)
+- [طريقة التثبيت والتشغيل](#-طريقة-التثبيت-والتشغيل)
+- [هيكل المشروع](#-هيكل-المشروع)
+- [لوحة التحكم](#-لوحة-التحكم)
+- [تحديث البوت على VPS](#-تحديث-البوت-على-vps)
+- [خطة التطوير المستقبلية](#-خطة-التطوير-المستقبلية)
 
-2. **Get your Admin ID**:
-   - Go to [@userinfobot](https://t.me/userinfobot) or similar to get your Telegram User ID (an integer like `123456789`).
+---
 
-3. **Configure Environment Variables**:
-   - Copy `.env.example` to `.env`:
-     ```bash
-     cp .env.example .env
-     ```
-   - Edit `.env` and fill in:
-     - `BOT_TOKEN`: Your API token.
-     - `ADMIN_ID`: Your Telegram User ID.
-     - `BOT_USERNAME`: The username of your bot (without `@`).
+## 🌟 نظرة عامة
 
-4. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+**Deploy Links Bot** هو بوت تيليجرام متكامل يعمل كنظام ترويجي ذكي داخل مجموعات تيليجرام. يقوم البوت بإرسال رسائل إعلانية تلقائية عند انضمام أعضاء جدد للمجموعات، مع منح الآدمن تحكماً كاملاً في كل تفصيلة من تفاصيل هذا الترويج عبر لوحة تحكم متكاملة داخل تيليجرام مباشرةً — دون الحاجة لأي لوحة ويب خارجية.
 
-5. **Run the Bot**:
-   ```bash
-   python bot.py
-   ```
+---
 
-## Deploying on Ubuntu VPS (Systemd)
+## ✨ المميزات الحالية
 
-To run the bot continuously on a Linux server:
+### 📢 نظام الترويج التلقائي
+- ✅ إرسال إعلان ترويجي تلقائي عند انضمام أي عضو جديد للمجموعة
+- ✅ دعم كامل للنصوص المنسقة (HTML)
+- ✅ دعم الصور والفيديو كجزء من الإعلان
+- ✅ ذكر تلقائي (Mention) للعضو الجديد داخل النص عبر `{user}`
+- ✅ نظام حماية من التكرار (Cooldown) قابل للتخصيص
+- ✅ حذف تلقائي للإعلان القديم عند إرسال الجديد
 
-1. Create a service file:
-   ```bash
-   sudo nano /etc/systemd/system/promobot.service
-   ```
-2. Add the following (adjust paths!):
-   ```ini
-   [Unit]
-   Description=Telegram Promo Bot
-   After=network.target
+### 💎 نظام المحتوى المدفوع (VIP)
+- ✅ تحويل الإعلان لمحتوى مدفوع بنجوم تيليجرام ⭐️
+- ✅ إذا كان الإعلان بصورة → تظهر الصورة مظللة (Paid Media)
+- ✅ إذا كان الإعلان نصياً فقط → يظهر مع فاتورة دفع (Invoice)
+- ✅ رسالة مخصصة قابلة للتعديل تُرسل للمستخدم فور إتمام الدفع
 
-   [Service]
-   User=root
-   WorkingDirectory=/path/to/telegram_promo_bot
-   ExecStart=/path/to/telegram_promo_bot/venv/bin/python bot.py
-   Restart=always
+### 📣 ساحر الإذاعة (Broadcast Wizard)
+- ✅ إذاعة جماعية للمستخدمين في الخاص
+- ✅ إذاعة جماعية لجميع المجموعات النشطة
+- ✅ دعم النصوص والصور والفيديو ضمن الإذاعة
+- ✅ إذاعة VIP مدفوعة بالنجوم
+- ✅ حذف ذاتي مجدول للإذاعة (10 دقائق، 30 دقيقة، ساعة، 6 ساعات، 24 ساعة)
 
-   [Install]
-   WantedBy=multi-user.target
-   ```
-3. Enable and start:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable promobot.service
-   sudo systemctl start promobot.service
-   ```
+### ⚙️ لوحة التحكم
+- ✅ تعديل نص الإعلان الترويجي
+- ✅ تعديل وسائط الإعلان (صورة/فيديو) أو حذفها
+- ✅ تعديل نص وعنوان زر الإعلان
+- ✅ تفعيل/تعطيل إظهار زر "أضف البوت لمجموعتك"
+- ✅ تخصيص رسالة الترحيب `/start` للخاص بالكامل
+- ✅ تخصيص الزر الثاني: اختيار URL خارجي أو رسالة نصية
+- ✅ معاينة الإعلان قبل نشره
+- ✅ إحصائيات تفصيلية (مستخدمون، مجموعات، إعلانات)
+- ✅ تصفح المجموعات النشطة وغير النشطة
+- ✅ إدارة المشرفين (إضافة وحذف)
 
-## Usage & Management
+### 🛡️ الاستقرار والموثوقية
+- ✅ حلقة تعافي ذاتي (Self-Healing Loop) تعيد تشغيل الـ Polling تلقائياً عند الأعطال
+- ✅ معالج أخطاء عالمي (Global Error Handler) يمنع توقف البوت بسبب رسائل تيليجرام الجديدة غير المدعومة
+- ✅ `drop_pending_updates=True` لتجاهل التحديثات المتراكمة عند كل إعادة تشغيل
+- ✅ معالجة تلقائية لـ `TelegramForbiddenError` وتحديث حالة المجموعة في قاعدة البيانات
 
-- Send `/start` to the bot in a private message to get the "Add to group" button.
-- Send `/admin` in a private message to open the Admin Panel (only works if your ID matches `ADMIN_ID`).
-- From the panel, you can adjust the cooldown, modify the promo message, view active groups, and more.
+---
+
+## 📦 متطلبات التشغيل
+
+- Python 3.10 أو أحدث
+- حساب بوت تيليجرام (عبر [@BotFather](https://t.me/BotFather))
+- VPS أو جهاز شخصي للتشغيل
+
+---
+
+## 🚀 طريقة التثبيت والتشغيل
+
+### 1. استنساخ المستودع
+```bash
+git clone https://github.com/albokhaiti123/deploy-links-bot.git
+cd deploy-links-bot
+```
+
+### 2. إنشاء البيئة الوهمية (venv) وتثبيت المكتبات
+```bash
+python3 -m venv venv
+source venv/bin/activate  # Linux/Mac
+# أو على ويندوز:
+venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+### 3. إعداد ملف المتغيرات `.env`
+أنشئ ملف `.env` بجوار `bot.py` واكتب فيه:
+```env
+BOT_TOKEN=your_bot_token_here
+ADMIN_ID=your_telegram_id_here
+BOT_USERNAME=your_bot_username_here
+```
+
+### 4. تشغيل البوت
+```bash
+python bot.py
+```
+
+### 4. التشغيل على VPS باستخدام PM2 (موصى به)
+```bash
+pm2 start bot.py --name "deploy-links-bot" --interpreter ./venv/bin/python
+pm2 save
+```
+
+---
+
+## 📁 هيكل المشروع
+
+```
+deploy-links-bot/
+├── bot.py              # الملف الرئيسي للبوت (كل المنطق والـ Handlers)
+├── requirements.txt    # مكتبات بايثون المطلوبة
+├── .env                # المتغيرات السرية (غير مرفوع لـ GitHub)
+├── .env.example        # مثال على ملف .env
+├── .gitignore          # ملفات مستثناة من Git (bot.db, .env)
+├── bot.db              # قاعدة البيانات SQLite (تُنشأ تلقائياً)
+└── README.md           # هذا الملف
+```
+
+### جداول قاعدة البيانات
+
+| الجدول | الوصف |
+|--------|-------|
+| `users` | المستخدمون الذين تفاعلوا مع البوت في الخاص |
+| `groups` | المجموعات التي يتواجد فيها البوت مع حالتها |
+| `settings` | جميع إعدادات البوت كأزواج key-value |
+| `events` | سجل الأحداث (إعلانات مرسلة وغيرها) |
+| `admins` | المشرفون المضافون من قبل المالك الرئيسي |
+| `broadcast_messages` | رسائل الإذاعة الموقتة (للحذف الذاتي) |
+
+---
+
+## 🎛️ لوحة التحكم
+
+افتح البوت في الخاص وأرسل:
+```
+/admin
+```
+
+ستظهر لك لوحة تحكم كاملة تحتوي على:
+
+```
+⚙️ لوحة التحكم
+━━━━━━━━━━━━━━
+📢 إعداد الترويج
+👥 المجموعات  |  📊 الإحصائيات
+⚙️ الإعدادات
+📣 ساحر الإذاعة (جديد ⭐️)
+👑 إدارة المشرفين
+⏸️ إيقاف الترويج
+```
+
+---
+
+## 🔄 تحديث البوت على VPS
+
+```bash
+cd ~/bots/deploy-links-bot/deploy-links-bot
+git pull origin main
+source venv/bin/activate
+pip install -r requirements.txt  # فقط إذا تغيرت المكتبات
+pm2 restart deploy-links-bot
+```
+
+---
+
+## 🗺️ خطة التطوير المستقبلية
+
+> **الأولوية:** عالية 🔴 | متوسطة 🟡 | مستقبلية 🔵
+
+### المرحلة الأولى — تعزيز الاستهداف والذكاء (أولوية عالية 🔴)
+
+| الميزة | الوصف |
+|--------|-------|
+| **استهداف انتقائي للمجموعات** | السماح للآدمن بتفعيل أو تعطيل الترويج لكل مجموعة على حدة بدلاً من إيقافه كلياً |
+| **جدولة الإذاعة** | إضافة خيار "أرسل الإذاعة في وقت محدد" (مثلاً: الساعة 8 مساءً) |
+| **قوالب الإعلانات** | حفظ عدة قوالب إعلانية وتفعيل أي منها بنقرة واحدة |
+| **إحصائيات الدفع** | تتبع إجمالي النجوم المكتسبة من الإعلانات المدفوعة |
+
+### المرحلة الثانية — تجربة المستخدم المتقدمة (أولوية متوسطة 🟡)
+
+| الميزة | الوصف |
+|--------|-------|
+| **ردود فعل على الإعلان** | إضافة أزرار "👍 مفيد / 👎 غير مفيد" للإعلانات الترويجية لجمع التقييمات |
+| **إعلان متعدد الصور (Album)** | دعم إرسال مجموعة صور (Media Group) في رسالة ترويجية واحدة |
+| **رسائل ترحيب ذكية** | تخصيص رسالة ترحيب مختلفة لكل مجموعة على حدة |
+| **نظام الإحالة** | مكافأة المستخدمين الذين يجلبون أعضاء جدد |
+
+### المرحلة الثالثة — اشتراكات وإدارة متقدمة (أولوية متوسطة 🟡)
+
+| الميزة | الوصف |
+|--------|-------|
+| **باقات الاشتراك المدفوعة** | بيع صلاحية الوصول لإعلانات VIP للمستخدمين بشكل آلي |
+| **لوحة تحليلات متقدمة** | رسوم بيانية لنمو المستخدمين والمجموعات عبر الزمن |
+| **نظام القائمة السوداء** | حظر مستخدمين بعينهم من رؤية الإعلانات |
+| **أوقات الصمت** | تحديد ساعات لا يرسل فيها البوت أي إعلانات (مثلاً: من 12 ليلاً حتى 8 صباحاً) |
+
+### المرحلة الرابعة — التوسع والتكامل (مستقبلية 🔵)
+
+| الميزة | الوصف |
+|--------|-------|
+| **API خارجي** | واجهة REST API تتيح التحكم في البوت من تطبيقات خارجية |
+| **لوحة ويب** | لوحة تحكم مرئية عبر المتصفح (Web Dashboard) مع رسوم بيانية تفصيلية |
+| **تكامل مع بوابات الدفع** | ربط مع TON Blockchain لتلقي المدفوعات بعملة TON مباشرةً |
+| **دعم متعدد اللغات** | واجهة البوت باللغتين العربية والإنجليزية |
+| **النسخ الاحتياطي التلقائي** | إرسال نسخة احتياطية من قاعدة البيانات للآدمن كل 24 ساعة |
+| **نظام التقارير الأسبوعية** | إرسال تقرير أسبوعي تلقائي بأهم الإحصائيات لصاحب البوت |
+
+---
+
+## 🧑‍💻 المطور
+
+**albokhaiti123**
+- 🐙 GitHub: [@albokhaiti123](https://github.com/albokhaiti123)
+
+---
+
+<div align="center">
+
+**⭐️ إذا أعجبك المشروع، لا تنسَ إضافة نجمة على GitHub!**
+
+</div>
