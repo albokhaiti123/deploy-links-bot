@@ -45,6 +45,11 @@ async def init_db():
             await db.execute("ALTER TABLE groups ADD COLUMN last_promo_msg_id INTEGER")
         except aiosqlite.OperationalError:
             pass
+        
+        try:
+            await db.execute("ALTER TABLE groups ADD COLUMN added_by INTEGER")
+        except aiosqlite.OperationalError:
+            pass
             
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -82,6 +87,49 @@ async def init_db():
                 chat_id INTEGER,
                 message_id INTEGER,
                 delete_at TIMESTAMP
+            )
+        """)
+        
+        # --- Campaign Tables ---
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                promo_text TEXT,
+                media_type TEXT,
+                media_file_id TEXT,
+                button_text TEXT DEFAULT '🎁 الحصول على العرض',
+                required_groups INTEGER DEFAULT 5,
+                unlock_content TEXT,
+                unlock_media_type TEXT,
+                unlock_media_file_id TEXT,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS campaign_user_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                verified_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'in_progress',
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP,
+                UNIQUE(campaign_id, user_id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS campaign_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                chat_title TEXT,
+                verified INTEGER DEFAULT 0,
+                verified_at TIMESTAMP,
+                UNIQUE(campaign_id, user_id, chat_id)
             )
         """)
         
@@ -152,6 +200,16 @@ class BroadcastWizard(StatesGroup):
     media_type_vip = State()
     stars = State()
     duration = State()
+    confirm = State()
+
+class CampaignWizard(StatesGroup):
+    name = State()
+    promo_text = State()
+    media = State()
+    button_text = State()
+    required_groups = State()
+    unlock_content = State()
+    unlock_media = State()
     confirm = State()
 
 # --- Bot & Dispatcher ---
@@ -330,6 +388,16 @@ async def cmd_start(message: types.Message):
         await db.execute("INSERT OR IGNORE INTO users (telegram_id, username, first_name, created_at) VALUES (?, ?, ?, ?)",
                          (message.from_user.id, message.from_user.username, message.from_user.first_name, datetime.now()))
         await db.commit()
+    
+    # Campaign deep link: /start camp_123
+    parts = message.text.split()
+    if len(parts) > 1 and parts[1].startswith("camp_"):
+        try:
+            campaign_id = int(parts[1].replace("camp_", ""))
+            await show_campaign_progress(message, campaign_id, message.from_user.id)
+            return
+        except (ValueError, TypeError):
+            pass
         
     bot_info = await bot.get_me()
     text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
@@ -372,10 +440,10 @@ async def bot_added_to_group(event: ChatMemberUpdated):
     if chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
         async with aiosqlite.connect(DB_NAME) as db:
             await db.execute("""
-                INSERT INTO groups (chat_id, title, chat_type, status, added_at, updated_at) 
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET status='active', title=?, updated_at=?
-            """, (chat.id, chat.title, chat.type, 'active', datetime.now(), datetime.now(), chat.title, datetime.now()))
+                INSERT INTO groups (chat_id, title, chat_type, status, added_at, updated_at, added_by) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET status='active', title=?, updated_at=?, added_by=?
+            """, (chat.id, chat.title, chat.type, 'active', datetime.now(), datetime.now(), event.from_user.id, chat.title, datetime.now(), event.from_user.id))
             await db.commit()
         logger.info(f"Bot added to group {chat.title} ({chat.id})")
 
@@ -413,6 +481,7 @@ def get_admin_keyboard(promo_enabled: str, user_id: int) -> InlineKeyboardMarkup
          InlineKeyboardButton(text="📊 الإحصائيات", callback_data="admin_stats")],
         [InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="admin_settings")],
         [InlineKeyboardButton(text="📣 ساحر الإذاعة (جديد ⭐️)", callback_data="admin_broadcast_menu")],
+        [InlineKeyboardButton(text="🎯 الحملات الترويجية", callback_data="cmp_menu")],
         [InlineKeyboardButton(text=toggle_text, callback_data="admin_toggle_promo")]
     ]
     
@@ -1223,6 +1292,775 @@ async def process_admin_id(message: types.Message, state: FSMContext):
             await db.commit()
             await message.answer(f"✅ تمت إزالة <code>{target_id}</code> من المشرفين.", parse_mode=ParseMode.HTML)
     await state.clear()
+
+# ========================================
+# === CAMPAIGN UNLOCK SYSTEM ===
+# ========================================
+
+# Verify cooldown: {(user_id, campaign_id): timestamp}
+_campaign_verify_cooldown = {}
+VERIFY_COOLDOWN_SECONDS = 10
+
+# --- Campaign Helpers ---
+
+async def get_campaign(campaign_id: int):
+    """Get campaign by ID as a dict."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT * FROM campaigns WHERE id = ?", (campaign_id,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            cols = [desc[0] for desc in cursor.description]
+            return dict(zip(cols, row))
+
+async def show_campaign_progress(target, campaign_id: int, user_id: int):
+    """Show campaign progress. 'target' can be Message or CallbackQuery."""
+    is_callback = isinstance(target, types.CallbackQuery)
+    msg = target.message if is_callback else target
+    
+    campaign = await get_campaign(campaign_id)
+    if not campaign or campaign['status'] == 'deleted':
+        text = "❌ هذه الحملة غير متوفرة."
+        if is_callback:
+            try:
+                await msg.edit_text(text)
+            except TelegramAPIError:
+                await msg.answer(text)
+            await target.answer()
+        else:
+            await msg.answer(text)
+        return
+    
+    # Get or create progress
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT verified_count, status FROM campaign_user_progress WHERE campaign_id=? AND user_id=?",
+            (campaign_id, user_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+        
+        if not row:
+            await db.execute(
+                "INSERT OR IGNORE INTO campaign_user_progress (campaign_id, user_id, verified_count, status, created_at, updated_at) VALUES (?, ?, 0, 'in_progress', ?, ?)",
+                (campaign_id, user_id, datetime.now(), datetime.now())
+            )
+            await db.commit()
+            verified_count, status = 0, 'in_progress'
+        else:
+            verified_count, status = row
+    
+    required = campaign['required_groups']
+    await log_event(0, user_id, f"campaign_{campaign_id}_viewed")
+    
+    if status == 'unlocked':
+        text = (
+            f"🎉 <b>تم فتح العرض!</b>\n\n"
+            f"📣 <b>{campaign['name']}</b>\n\n"
+            f"✅ لقد أكملت الشرط بنجاح ({required}/{required} مجموعات).\n\n"
+            f"اضغط الزر أدناه للحصول على العرض."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 الحصول على العرض", callback_data=f"camp_unlock_{campaign_id}")]
+        ])
+    elif campaign['status'] == 'paused' and verified_count == 0:
+        text = "⏸ هذه الحملة متوقفة حالياً."
+        kb = None
+    else:
+        bar_filled = min(verified_count, required)
+        bar = "▓" * bar_filled + "░" * (required - bar_filled)
+        bot_info = await bot.get_me()
+        text = (
+            f"🔒 <b>العرض مغلق</b>\n\n"
+            f"📣 <b>{campaign['name']}</b>\n\n"
+            f"للحصول على العرض يجب عليك إضافة البوت إلى <b>{required}</b> مجموعات.\n\n"
+            f"📊 التقدم: <b>{verified_count}</b> / <b>{required}</b>\n"
+            f"<code>{bar}</code>\n"
+        )
+        if 0 < verified_count < required:
+            text += f"\n⏳ أكمل <b>{required - verified_count}</b> مجموعات أخرى."
+        
+        buttons = [
+            [InlineKeyboardButton(text="➕ إضافة البوت إلى المجموعات", url=f"https://t.me/{bot_info.username}?startgroup=camp_{campaign_id}")],
+            [InlineKeyboardButton(text="🔄 تحقق من الإضافة", callback_data=f"camp_verify_{campaign_id}")]
+        ]
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    try:
+        if is_callback:
+            await msg.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+            await target.answer()
+        else:
+            await msg.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except TelegramAPIError:
+        await msg.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        if is_callback:
+            await target.answer()
+
+
+# --- Campaign User Handlers ---
+
+@dp.callback_query(F.data.startswith("camp_verify_"))
+async def cb_camp_verify(callback: types.CallbackQuery):
+    campaign_id = int(callback.data.split("_")[-1])
+    user_id = callback.from_user.id
+    
+    # Rate limit
+    key = (user_id, campaign_id)
+    now = time.time()
+    if key in _campaign_verify_cooldown:
+        elapsed = now - _campaign_verify_cooldown[key]
+        if elapsed < VERIFY_COOLDOWN_SECONDS:
+            remaining = int(VERIFY_COOLDOWN_SECONDS - elapsed)
+            await callback.answer(f"⏳ يرجى الانتظار {remaining} ثوانٍ قبل التحقق مجدداً.", show_alert=True)
+            return
+    _campaign_verify_cooldown[key] = now
+    
+    campaign = await get_campaign(campaign_id)
+    if not campaign or campaign['status'] == 'deleted':
+        await callback.answer("❌ هذه الحملة غير متوفرة.", show_alert=True)
+        return
+    
+    # Check if already unlocked
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT status FROM campaign_user_progress WHERE campaign_id=? AND user_id=?",
+            (campaign_id, user_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row and row[0] == 'unlocked':
+                await show_campaign_progress(callback, campaign_id, user_id)
+                return
+    
+    await callback.answer("🔄 جاري التحقق من المجموعات...")
+    
+    required = campaign['required_groups']
+    bot_info = await bot.get_me()
+    bot_id = bot_info.id
+    
+    # Get groups this user added the bot to
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT chat_id, title FROM groups WHERE added_by = ? AND status = 'active'",
+            (user_id,)
+        ) as cursor:
+            user_groups = await cursor.fetchall()
+        
+        # Already verified for this campaign
+        async with db.execute(
+            "SELECT chat_id FROM campaign_groups WHERE campaign_id = ? AND user_id = ? AND verified = 1",
+            (campaign_id, user_id)
+        ) as cursor:
+            already_verified = {row[0] for row in await cursor.fetchall()}
+    
+    new_verified = 0
+    for chat_id, title in user_groups:
+        if chat_id in already_verified:
+            continue
+        if len(already_verified) + new_verified >= required:
+            break
+        
+        try:
+            member = await bot.get_chat_member(chat_id, bot_id)
+            if member.status in ['member', 'administrator', 'creator']:
+                async with aiosqlite.connect(DB_NAME) as db:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO campaign_groups (campaign_id, user_id, chat_id, chat_title, verified, verified_at) VALUES (?, ?, ?, ?, 1, ?)",
+                        (campaign_id, user_id, chat_id, title, datetime.now())
+                    )
+                    await db.commit()
+                new_verified += 1
+                await log_event(chat_id, user_id, f"campaign_{campaign_id}_group_verified")
+        except (TelegramForbiddenError, TelegramAPIError):
+            pass
+        await asyncio.sleep(0.1)
+    
+    total_verified = len(already_verified) + new_verified
+    is_complete = total_verified >= required
+    new_status = 'unlocked' if is_complete else 'in_progress'
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """INSERT INTO campaign_user_progress (campaign_id, user_id, verified_count, status, created_at, updated_at) 
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(campaign_id, user_id) DO UPDATE SET verified_count=?, status=?, updated_at=?""",
+            (campaign_id, user_id, total_verified, new_status, datetime.now(), datetime.now(),
+             total_verified, new_status, datetime.now())
+        )
+        await db.commit()
+    
+    if is_complete:
+        await log_event(0, user_id, f"campaign_{campaign_id}_unlocked")
+    
+    await show_campaign_progress(callback, campaign_id, user_id)
+
+
+@dp.callback_query(F.data.startswith("camp_unlock_"))
+async def cb_camp_unlock(callback: types.CallbackQuery):
+    campaign_id = int(callback.data.split("_")[-1])
+    user_id = callback.from_user.id
+    
+    campaign = await get_campaign(campaign_id)
+    if not campaign:
+        await callback.answer("❌ الحملة غير موجودة.", show_alert=True)
+        return
+    
+    # Verify unlocked status
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT status FROM campaign_user_progress WHERE campaign_id=? AND user_id=?",
+            (campaign_id, user_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row or row[0] != 'unlocked':
+                await callback.answer("❌ لم تكمل الشرط بعد.", show_alert=True)
+                return
+    
+    await log_event(0, user_id, f"campaign_{campaign_id}_content_delivered")
+    
+    unlock_text = campaign['unlock_content'] or "🎁 تم فتح العرض!"
+    try:
+        if campaign.get('unlock_media_file_id'):
+            if campaign['unlock_media_type'] == 'photo':
+                await callback.message.answer_photo(
+                    photo=campaign['unlock_media_file_id'],
+                    caption=f"🔓 <b>محتوى العرض:</b>\n\n{unlock_text}",
+                    parse_mode=ParseMode.HTML
+                )
+            elif campaign['unlock_media_type'] == 'video':
+                await callback.message.answer_video(
+                    video=campaign['unlock_media_file_id'],
+                    caption=f"🔓 <b>محتوى العرض:</b>\n\n{unlock_text}",
+                    parse_mode=ParseMode.HTML
+                )
+        else:
+            await callback.message.answer(
+                f"🔓 <b>محتوى العرض:</b>\n\n{unlock_text}",
+                parse_mode=ParseMode.HTML
+            )
+    except Exception as e:
+        logger.error(f"Failed to deliver campaign {campaign_id} content: {e}")
+        await callback.message.answer("❌ حدث خطأ أثناء تسليم المحتوى. حاول لاحقاً.")
+    
+    await callback.answer()
+
+
+# --- Campaign Admin Menu ---
+
+@dp.callback_query(F.data == "cmp_menu")
+async def cb_campaign_menu(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        return
+    await state.clear()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ إنشاء حملة جديدة", callback_data="cmp_new")],
+        [InlineKeyboardButton(text="📋 الحملات النشطة", callback_data="cmp_list")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
+    ])
+    await callback.message.edit_text(
+        "🎯 <b>الحملات الترويجية</b>\n━━━━━━━━━━━━━━\n\n"
+        "أنشئ حملات ترويجية تشترط على المستخدمين إضافة البوت\n"
+        "لعدد محدد من المجموعات للحصول على المحتوى.\n\n"
+        "اختر إجراء:",
+        reply_markup=kb, parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+
+# --- Campaign Creation Wizard ---
+
+@dp.callback_query(F.data == "cmp_new")
+async def cb_campaign_new(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        return
+    await callback.message.answer(
+        "🎯 <b>إنشاء حملة جديدة</b>\n\n"
+        "<b>الخطوة 1/7:</b> أرسل اسم الحملة.\n"
+        "(مثال: عرض القناة الجديد)\n\n"
+        "لإلغاء الأمر أرسل /cancel",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(CampaignWizard.name)
+    await callback.answer()
+
+@dp.message(CampaignWizard.name)
+async def process_cw_name(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم إلغاء إنشاء الحملة.")
+        await state.clear()
+        return
+    await state.update_data(name=message.text)
+    await message.answer(
+        "📝 <b>الخطوة 2/7:</b> أرسل النص الترويجي للحملة.\n"
+        "(هذا النص سيظهر في رسالة البث)\n"
+        "(يمكنك استخدام HTML)\n\n"
+        "لإلغاء الأمر أرسل /cancel",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(CampaignWizard.promo_text)
+
+@dp.message(CampaignWizard.promo_text)
+async def process_cw_promo_text(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم إلغاء إنشاء الحملة.")
+        await state.clear()
+        return
+    await state.update_data(promo_text=message.html_text or message.text)
+    await message.answer(
+        "🖼 <b>الخطوة 3/7:</b> أرسل صورة أو فيديو لإرفاقه مع الإعلان.\n"
+        "إذا أردت بدون وسائط أرسل /skip\n\n"
+        "لإلغاء الأمر أرسل /cancel",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(CampaignWizard.media)
+
+@dp.message(CampaignWizard.media, F.photo | F.video | F.text)
+async def process_cw_media(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم إلغاء إنشاء الحملة.")
+        await state.clear()
+        return
+    if message.text == '/skip':
+        await state.update_data(media_type=None, media_file_id=None)
+    elif message.photo:
+        await state.update_data(media_type="photo", media_file_id=message.photo[-1].file_id)
+    elif message.video:
+        await state.update_data(media_type="video", media_file_id=message.video.file_id)
+    else:
+        await message.answer("❌ أرسل صورة أو فيديو، أو /skip، أو /cancel.")
+        return
+    
+    await message.answer(
+        "🔘 <b>الخطوة 4/7:</b> أرسل نص زر الحملة.\n"
+        "(هذا الزر سيظهر في رسالة البث ويوجه المستخدم للحملة)\n"
+        "(مثال: 🎁 الحصول على العرض)\n\n"
+        "أرسل /skip لاستخدام النص الافتراضي\n"
+        "لإلغاء الأمر أرسل /cancel",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(CampaignWizard.button_text)
+
+@dp.message(CampaignWizard.button_text)
+async def process_cw_button_text(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم إلغاء إنشاء الحملة.")
+        await state.clear()
+        return
+    if message.text == '/skip':
+        await state.update_data(button_text="🎁 الحصول على العرض")
+    else:
+        await state.update_data(button_text=message.text)
+    
+    await message.answer(
+        "🔢 <b>الخطوة 5/7:</b> كم مجموعة يجب على المستخدم إضافة البوت إليها؟\n"
+        "(أرسل رقماً بين 1 و 50)\n\n"
+        "لإلغاء الأمر أرسل /cancel",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(CampaignWizard.required_groups)
+
+@dp.message(CampaignWizard.required_groups)
+async def process_cw_required_groups(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم إلغاء إنشاء الحملة.")
+        await state.clear()
+        return
+    if not message.text.isdigit():
+        await message.answer("❌ يرجى إرسال أرقام فقط.")
+        return
+    num = int(message.text)
+    if num < 1 or num > 50:
+        await message.answer("❌ يجب أن يكون الرقم بين 1 و 50.")
+        return
+    await state.update_data(required_groups=num)
+    
+    await message.answer(
+        "🔓 <b>الخطوة 6/7:</b> أرسل محتوى الفتح (ما سيحصل عليه المستخدم بعد إكمال الشرط).\n"
+        "(مثال: رابط دعوة القناة، كود خصم، رسالة سرية...)\n\n"
+        "لإلغاء الأمر أرسل /cancel",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(CampaignWizard.unlock_content)
+
+@dp.message(CampaignWizard.unlock_content)
+async def process_cw_unlock_content(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم إلغاء إنشاء الحملة.")
+        await state.clear()
+        return
+    await state.update_data(unlock_content=message.html_text or message.text)
+    
+    await message.answer(
+        "🖼 <b>الخطوة 7/7:</b> أرسل صورة أو فيديو لإرفاقه مع محتوى الفتح.\n"
+        "إذا أردت بدون وسائط أرسل /skip\n\n"
+        "لإلغاء الأمر أرسل /cancel",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(CampaignWizard.unlock_media)
+
+@dp.message(CampaignWizard.unlock_media, F.photo | F.video | F.text)
+async def process_cw_unlock_media(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم إلغاء إنشاء الحملة.")
+        await state.clear()
+        return
+    if message.text == '/skip':
+        await state.update_data(unlock_media_type=None, unlock_media_file_id=None)
+    elif message.photo:
+        await state.update_data(unlock_media_type="photo", unlock_media_file_id=message.photo[-1].file_id)
+    elif message.video:
+        await state.update_data(unlock_media_type="video", unlock_media_file_id=message.video.file_id)
+    else:
+        await message.answer("❌ أرسل صورة أو فيديو، أو /skip، أو /cancel.")
+        return
+    
+    # Show summary
+    data = await state.get_data()
+    summary = (
+        f"📋 <b>ملخص الحملة:</b>\n\n"
+        f"📌 <b>الاسم:</b> {data['name']}\n"
+        f"🖼 <b>وسائط الإعلان:</b> {'نعم (' + data.get('media_type', '') + ')' if data.get('media_file_id') else 'لا'}\n"
+        f"🔘 <b>نص الزر:</b> {data['button_text']}\n"
+        f"👥 <b>المجموعات المطلوبة:</b> {data['required_groups']}\n"
+        f"🖼 <b>وسائط الفتح:</b> {'نعم' if data.get('unlock_media_file_id') else 'لا'}\n\n"
+        f"هل تريد حفظ الحملة؟"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ حفظ الحملة", callback_data="cmp_save")],
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="cmp_cancel_wizard")]
+    ])
+    await message.answer(summary, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await state.set_state(CampaignWizard.confirm)
+
+@dp.callback_query(CampaignWizard.confirm)
+async def cb_cw_confirm(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        return
+    if callback.data == "cmp_cancel_wizard":
+        await callback.message.answer("❌ تم إلغاء إنشاء الحملة.")
+        await state.clear()
+        await callback.answer()
+        return
+    
+    data = await state.get_data()
+    await state.clear()
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """INSERT INTO campaigns (name, promo_text, media_type, media_file_id, button_text, required_groups, 
+               unlock_content, unlock_media_type, unlock_media_file_id, status, created_at, updated_at) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+            (data['name'], data['promo_text'], data.get('media_type'), data.get('media_file_id'),
+             data['button_text'], data['required_groups'], data['unlock_content'],
+             data.get('unlock_media_type'), data.get('unlock_media_file_id'),
+             datetime.now(), datetime.now())
+        )
+        campaign_id = cursor.lastrowid
+        await db.commit()
+    
+    await callback.message.answer(f"✅ تم حفظ الحملة بنجاح! (ID: {campaign_id})")
+    await show_campaign_admin_view(callback.message, campaign_id)
+    await callback.answer()
+
+
+# --- Campaign Admin View ---
+
+async def show_campaign_admin_view(message: types.Message, campaign_id: int):
+    """Show campaign management view to admin."""
+    campaign = await get_campaign(campaign_id)
+    if not campaign:
+        await message.answer("❌ الحملة غير موجودة.")
+        return
+    
+    status_map = {'active': ('🟢', 'نشطة'), 'paused': ('⏸', 'متوقفة'), 'deleted': ('🗑', 'محذوفة')}
+    icon, status_text = status_map.get(campaign['status'], ('❓', 'غير معروف'))
+    
+    text = (
+        f"📣 <b>حملة: {campaign['name']}</b>\n"
+        f"━━━━━━━━━━━━━━\n\n"
+        f"📌 <b>الحالة:</b> {icon} {status_text}\n"
+        f"👥 <b>المجموعات المطلوبة:</b> {campaign['required_groups']}\n"
+        f"🔘 <b>نص الزر:</b> {campaign['button_text']}\n"
+        f"🖼 <b>وسائط:</b> {'نعم' if campaign.get('media_file_id') else 'لا'}\n"
+    )
+    
+    buttons = []
+    if campaign['status'] == 'active':
+        buttons.append([
+            InlineKeyboardButton(text="📢 نشر للمستخدمين", callback_data=f"cmp_pub_u_{campaign_id}"),
+            InlineKeyboardButton(text="🌐 نشر للمجموعات", callback_data=f"cmp_pub_g_{campaign_id}")
+        ])
+        buttons.append([InlineKeyboardButton(text="📢 نشر للجميع", callback_data=f"cmp_pub_a_{campaign_id}")])
+        buttons.append([InlineKeyboardButton(text="🧪 اختبار (إرسال لي)", callback_data=f"cmp_test_{campaign_id}")])
+        buttons.append([
+            InlineKeyboardButton(text="📊 الإحصائيات", callback_data=f"cmp_stats_{campaign_id}"),
+            InlineKeyboardButton(text="⏸ إيقاف", callback_data=f"cmp_pause_{campaign_id}")
+        ])
+    elif campaign['status'] == 'paused':
+        buttons.append([
+            InlineKeyboardButton(text="📊 الإحصائيات", callback_data=f"cmp_stats_{campaign_id}"),
+            InlineKeyboardButton(text="▶️ تفعيل", callback_data=f"cmp_resume_{campaign_id}")
+        ])
+    buttons.append([InlineKeyboardButton(text="🗑 حذف", callback_data=f"cmp_del_{campaign_id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="cmp_list")])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+# --- Campaign List ---
+
+@dp.callback_query(F.data == "cmp_list")
+async def cb_campaign_list(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT id, name, status, required_groups FROM campaigns WHERE status != 'deleted' ORDER BY id DESC LIMIT 15"
+        ) as cursor:
+            campaigns = await cursor.fetchall()
+    
+    if not campaigns:
+        text = "📋 <b>الحملات</b>\n━━━━━━━━━━━━━━\n\nلا توجد حملات حتى الآن."
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ إنشاء حملة جديدة", callback_data="cmp_new")],
+            [InlineKeyboardButton(text="🔙 رجوع", callback_data="cmp_menu")]
+        ])
+    else:
+        lines = ["📋 <b>الحملات (آخر 15)</b>\n━━━━━━━━━━━━━━\n"]
+        buttons = []
+        for cid, name, status, req in campaigns:
+            icon = "🟢" if status == 'active' else "⏸"
+            lines.append(f"{icon} <b>{name}</b> — {req} مجموعات")
+            buttons.append([InlineKeyboardButton(text=f"{icon} {name}", callback_data=f"cmp_view_{cid}")])
+        text = "\n".join(lines)
+        buttons.append([InlineKeyboardButton(text="➕ إنشاء حملة جديدة", callback_data="cmp_new")])
+        buttons.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="cmp_menu")])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except TelegramAPIError:
+        await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+
+# --- Campaign View (Admin) ---
+
+@dp.callback_query(F.data.startswith("cmp_view_"))
+async def cb_campaign_view(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    campaign_id = int(callback.data.split("_")[-1])
+    await show_campaign_admin_view(callback.message, campaign_id)
+    await callback.answer()
+
+
+# --- Campaign Stats ---
+
+@dp.callback_query(F.data.startswith("cmp_stats_"))
+async def cb_campaign_stats(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    campaign_id = int(callback.data.split("_")[-1])
+    campaign = await get_campaign(campaign_id)
+    if not campaign:
+        await callback.answer("❌ الحملة غير موجودة.", show_alert=True)
+        return
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type=?", (f"campaign_{campaign_id}_viewed",)
+        ) as cursor:
+            views = (await cursor.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM campaign_user_progress WHERE campaign_id=?", (campaign_id,)
+        ) as cursor:
+            started = (await cursor.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM campaign_groups WHERE campaign_id=? AND verified=1", (campaign_id,)
+        ) as cursor:
+            groups_added = (await cursor.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM campaign_user_progress WHERE campaign_id=? AND status='unlocked'", (campaign_id,)
+        ) as cursor:
+            unlocked = (await cursor.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type=?", (f"campaign_{campaign_id}_content_delivered",)
+        ) as cursor:
+            delivered = (await cursor.fetchone())[0]
+    
+    text = (
+        f"📊 <b>إحصائيات الحملة</b>\n"
+        f"━━━━━━━━━━━━━━\n\n"
+        f"📣 <b>{campaign['name']}</b>\n\n"
+        f"👁 <b>شاهدوا الحملة:</b> {views}\n"
+        f"🔒 <b>بدأوا الشرط:</b> {started}\n"
+        f"➕ <b>مجموعات أضيف إليها البوت:</b> {groups_added}\n"
+        f"🔓 <b>أكملوا الشرط:</b> {unlocked}\n"
+        f"🎁 <b>حصلوا على المحتوى:</b> {delivered}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data=f"cmp_view_{campaign_id}")]
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except TelegramAPIError:
+        await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+
+# --- Campaign Pause/Resume/Delete ---
+
+@dp.callback_query(F.data.startswith("cmp_pause_"))
+async def cb_campaign_pause(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    campaign_id = int(callback.data.split("_")[-1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE campaigns SET status='paused', updated_at=? WHERE id=?", (datetime.now(), campaign_id))
+        await db.commit()
+    await callback.answer("⏸ تم إيقاف الحملة.", show_alert=True)
+    await show_campaign_admin_view(callback.message, campaign_id)
+
+@dp.callback_query(F.data.startswith("cmp_resume_"))
+async def cb_campaign_resume(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    campaign_id = int(callback.data.split("_")[-1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE campaigns SET status='active', updated_at=? WHERE id=?", (datetime.now(), campaign_id))
+        await db.commit()
+    await callback.answer("▶️ تم تفعيل الحملة.", show_alert=True)
+    await show_campaign_admin_view(callback.message, campaign_id)
+
+@dp.callback_query(F.data.startswith("cmp_del_"))
+async def cb_campaign_delete(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    campaign_id = int(callback.data.split("_")[-1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE campaigns SET status='deleted', updated_at=? WHERE id=?", (datetime.now(), campaign_id))
+        await db.commit()
+    await callback.answer("🗑 تم حذف الحملة.", show_alert=True)
+    # Go back to list
+    await cb_campaign_list(callback)
+
+
+# --- Campaign Publish (Broadcast) ---
+
+async def execute_campaign_broadcast(campaign_id: int, target: str, status_msg: types.Message):
+    """Broadcast campaign promo to users/groups using existing broadcast pattern."""
+    campaign = await get_campaign(campaign_id)
+    if not campaign:
+        await status_msg.edit_text("❌ الحملة غير موجودة.")
+        return
+    
+    bot_info = await bot.get_me()
+    cta_button = InlineKeyboardButton(
+        text=campaign['button_text'],
+        url=f"https://t.me/{bot_info.username}?start=camp_{campaign_id}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[cta_button]])
+    
+    if target in ('users', 'all'):
+        query_users = "SELECT telegram_id FROM users"
+    if target in ('groups', 'all'):
+        query_groups = "SELECT chat_id FROM groups WHERE status='active'"
+    
+    targets_list = []
+    async with aiosqlite.connect(DB_NAME) as db:
+        if target in ('users', 'all'):
+            async with db.execute(query_users) as cursor:
+                targets_list.extend(await cursor.fetchall())
+        if target in ('groups', 'all'):
+            async with db.execute(query_groups) as cursor:
+                targets_list.extend(await cursor.fetchall())
+    
+    success = 0
+    for t in targets_list:
+        chat_id = t[0]
+        try:
+            if campaign.get('media_file_id'):
+                if campaign['media_type'] == 'photo':
+                    await bot.send_photo(chat_id, photo=campaign['media_file_id'],
+                                         caption=campaign['promo_text'], reply_markup=kb, parse_mode=ParseMode.HTML)
+                else:
+                    await bot.send_video(chat_id, video=campaign['media_file_id'],
+                                         caption=campaign['promo_text'], reply_markup=kb, parse_mode=ParseMode.HTML)
+            else:
+                await bot.send_message(chat_id, campaign['promo_text'], reply_markup=kb, parse_mode=ParseMode.HTML)
+            success += 1
+        except TelegramForbiddenError:
+            if target in ('groups', 'all'):
+                async with aiosqlite.connect(DB_NAME) as db2:
+                    await db2.execute("UPDATE groups SET status='inactive' WHERE chat_id=?", (chat_id,))
+                    await db2.commit()
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
+    
+    await status_msg.edit_text(f"✅ اكتمل نشر الحملة! تم الإرسال إلى <b>{success}</b> جهة.", parse_mode=ParseMode.HTML)
+
+
+@dp.callback_query(F.data.startswith("cmp_pub_"))
+async def cb_campaign_publish(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    
+    parts = callback.data.split("_")
+    # cmp_pub_u_5 → parts = ["cmp", "pub", "u", "5"]
+    target_code = parts[2]  # u/g/a
+    campaign_id = int(parts[3])
+    
+    target_map = {'u': 'users', 'g': 'groups', 'a': 'all'}
+    target = target_map.get(target_code, 'users')
+    target_ar = {'users': 'المستخدمين', 'groups': 'المجموعات', 'all': 'الجميع'}
+    
+    campaign = await get_campaign(campaign_id)
+    if not campaign or campaign['status'] != 'active':
+        await callback.answer("❌ الحملة غير متوفرة أو متوقفة.", show_alert=True)
+        return
+    
+    status_msg = await callback.message.answer(f"🚀 جاري نشر الحملة إلى {target_ar[target]}، يرجى الانتظار...")
+    asyncio.create_task(execute_campaign_broadcast(campaign_id, target, status_msg))
+    await callback.answer()
+
+
+# --- Campaign Test ---
+
+@dp.callback_query(F.data.startswith("cmp_test_"))
+async def cb_campaign_test(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    campaign_id = int(callback.data.split("_")[-1])
+    campaign = await get_campaign(campaign_id)
+    if not campaign:
+        await callback.answer("❌ الحملة غير موجودة.", show_alert=True)
+        return
+    
+    bot_info = await bot.get_me()
+    cta_button = InlineKeyboardButton(
+        text=campaign['button_text'],
+        url=f"https://t.me/{bot_info.username}?start=camp_{campaign_id}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[cta_button]])
+    
+    admin_id = callback.from_user.id
+    try:
+        if campaign.get('media_file_id'):
+            if campaign['media_type'] == 'photo':
+                await bot.send_photo(admin_id, photo=campaign['media_file_id'],
+                                     caption=f"🧪 <b>[اختبار]</b>\n\n{campaign['promo_text']}", reply_markup=kb, parse_mode=ParseMode.HTML)
+            else:
+                await bot.send_video(admin_id, video=campaign['media_file_id'],
+                                     caption=f"🧪 <b>[اختبار]</b>\n\n{campaign['promo_text']}", reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await bot.send_message(admin_id, f"🧪 <b>[اختبار]</b>\n\n{campaign['promo_text']}", reply_markup=kb, parse_mode=ParseMode.HTML)
+        await callback.answer("✅ تم إرسال نسخة تجريبية لك.", show_alert=True)
+    except Exception as e:
+        logger.error(f"Campaign test send failed: {e}")
+        await callback.answer("❌ فشل إرسال الاختبار.", show_alert=True)
 
 # --- Global Error Handler ---
 # This silently catches unknown/unsupported Telegram update types (e.g. new RichText fields)
