@@ -133,6 +133,35 @@ async def init_db():
             )
         """)
         
+        # Campaign column migrations
+        for col, coldef in [
+            ("unlock_delete_seconds", "INTEGER DEFAULT 0"),
+            ("mode", "TEXT DEFAULT 'manual'"),
+            ("repeat_hours", "INTEGER DEFAULT 0"),
+            ("recurring_active", "INTEGER DEFAULT 0"),
+            ("last_broadcast_at", "TIMESTAMP"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE campaigns ADD COLUMN {col} {coldef}")
+            except aiosqlite.OperationalError:
+                pass
+        
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS recurring_broadcasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target TEXT NOT NULL,
+                text TEXT,
+                media_id TEXT,
+                media_type TEXT,
+                is_vip INTEGER DEFAULT 0,
+                stars INTEGER DEFAULT 0,
+                repeat_hours INTEGER DEFAULT 24,
+                is_active INTEGER DEFAULT 1,
+                last_broadcast_at TIMESTAMP,
+                created_at TIMESTAMP
+            )
+        """)
+        
         default_settings = {
             "promo_enabled": "true",
             "promo_text": "🔥 مرحبًا بك يا {user}!\nاكتشف خدماتنا ومحتوانا من خلال الرابط التالي.",
@@ -151,6 +180,13 @@ async def init_db():
             "start_btn2_type": "text",
             "start_btn2_content": "ℹ️ <b>طريقة الاستخدام:</b>\n\n1. اضغط على زر 'إضافة البوت إلى مجموعتي'.\n2. اختر المجموعة التي تريد إضافة البوت إليها.\n3. عند انضمام أي عضو جديد، سيقوم البوت بإرسال رسالة ترحيبية ترويجية.\n4. يمتلك البوت نظام حماية من التكرار (Cooldown) لمنع الإزعاج."
         }
+        # Add new settings that may not exist yet
+        new_settings = {
+            "private_welcome_enabled": "true",
+            "promo_delete_seconds": "0",
+            "test_group_chat_id": ""
+        }
+        default_settings.update(new_settings)
         
         for k, v in default_settings.items():
             await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
@@ -192,6 +228,9 @@ class AdminEdit(StatesGroup):
     waiting_for_start_btn2_text = State()
     waiting_for_promo_stars = State()
     waiting_for_post_payment_msg = State()
+    waiting_for_test_group = State()
+    waiting_for_rbw_text = State()
+    waiting_for_rbw_hours = State()
 
 class BroadcastWizard(StatesGroup):
     target = State()
@@ -210,6 +249,9 @@ class CampaignWizard(StatesGroup):
     required_groups = State()
     unlock_content = State()
     unlock_media = State()
+    unlock_delete = State()
+    mode_select = State()
+    repeat_hours = State()
     confirm = State()
 
 # --- Bot & Dispatcher ---
@@ -224,19 +266,19 @@ def build_promo_keyboard(promo_url: str, promo_button_text: str, bot_username: s
     if promo_button_text and promo_url:
         keyboard.append([InlineKeyboardButton(text=promo_button_text, url=promo_url)])
     if show_bot_btn == "true":
-        keyboard.append([InlineKeyboardButton(text="🤖 أضف البوت إلى مجموعتك", url=get_bot_add_url(bot_username))])
+        keyboard.append([InlineKeyboardButton(text="🤖 Add bot to your group", url=get_bot_add_url(bot_username))])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 async def get_start_message_data(bot_username: str):
     start_text = await get_setting("start_message")
     if not start_text:
-        start_text = "🤖 أهلاً بك في البوت!"
+        start_text = "🤖 Welcome to the bot!"
         
     btn2_name = await get_setting("start_btn2_name")
     btn2_type = await get_setting("start_btn2_type")
     btn2_content = await get_setting("start_btn2_content")
     
-    kb = [[InlineKeyboardButton(text="➕ إضافة البوت إلى مجموعتي", url=get_bot_add_url(bot_username))]]
+    kb = [[InlineKeyboardButton(text="➕ Add bot to my group", url=get_bot_add_url(bot_username))]]
     
     if btn2_name:
         if btn2_type == "url":
@@ -317,11 +359,11 @@ async def trigger_group_promo(message: types.Message, target_user: types.User):
             else:
                 # Paid Text (Invoice)
                 text_msg = await bot.send_message(chat_id, promo_text_formatted, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-                prices = [types.LabeledPrice(label="فتح المحتوى السري", amount=stars)]
+                prices = [types.LabeledPrice(label="Unlock Secret Content", amount=stars)]
                 sent_msg = await bot.send_invoice(
                     chat_id=chat_id,
-                    title="محتوى مدفوع (VIP)",
-                    description="قم بدفع النجوم لاستلام رسالة ما بعد الدفع فوراً.",
+                    title="VIP Paid Content",
+                    description="Pay Stars to receive the post-payment message instantly.",
                     payload="paid_promo",
                     provider_token="", 
                     currency="XTR",
@@ -347,6 +389,14 @@ async def trigger_group_promo(message: types.Message, target_user: types.User):
                 await db.commit()
                 
         await log_event(chat_id, target_user.id, "promo_sent")
+        # Schedule auto-delete if promo_delete_seconds is set
+        promo_del_sec = await get_setting("promo_delete_seconds")
+        if sent_msg and promo_del_sec and promo_del_sec.isdigit() and int(promo_del_sec) > 0:
+            delete_at = datetime.now() + timedelta(seconds=int(promo_del_sec))
+            async with aiosqlite.connect(DB_NAME) as db:
+                await db.execute("INSERT INTO broadcast_messages (chat_id, message_id, delete_at) VALUES (?, ?, ?)",
+                                 (chat_id, sent_msg.message_id, delete_at))
+                await db.commit()
         logger.info(f"Promo sent in {chat_id}")
     except TelegramRetryAfter as e:
         logger.warning(f"Rate limited in {chat_id}. Retry after {e.retry_after}")
@@ -399,6 +449,11 @@ async def cmd_start(message: types.Message):
         except (ValueError, TypeError):
             pass
         
+    # Check if private welcome is enabled
+    pw_enabled = await get_setting("private_welcome_enabled")
+    if pw_enabled == "false":
+        return
+        
     bot_info = await bot.get_me()
     text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
     await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -407,8 +462,8 @@ async def cmd_start(message: types.Message):
 async def cb_start_btn2_click(callback: types.CallbackQuery):
     content = await get_setting("start_btn2_content")
     if not content:
-        content = "لا توجد رسالة."
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 رجوع", callback_data="start_back")]])
+        content = "No message available."
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="start_back")]])
     await callback.message.edit_text(content, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 @dp.callback_query(F.data == "start_back")
@@ -427,9 +482,9 @@ async def process_successful_payment(message: types.Message):
     if message.successful_payment.invoice_payload == "paid_promo":
         post_msg = await get_setting("promo_post_payment_msg")
         if not post_msg:
-            post_msg = "✅ تم تأكيد الدفع بنجاح!"
+            post_msg = "✅ Payment confirmed successfully!"
         try:
-            await message.reply(f"⭐️ <b>تم تأكيد الدفع!</b>\n\n{post_msg}", parse_mode=ParseMode.HTML)
+            await message.reply(f"⭐️ <b>Payment Confirmed!</b>\n\n{post_msg}", parse_mode=ParseMode.HTML)
         except Exception as e:
             logger.error(f"Failed to send post payment msg: {e}")
 
@@ -538,8 +593,9 @@ async def cb_admin_promo_settings(callback: types.CallbackQuery, state: FSMConte
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 تعديل النص", callback_data="admin_edit_text"),
          InlineKeyboardButton(text="🖼️ تعديل الوسائط", callback_data="admin_edit_media")],
-        [InlineKeyboardButton(text="🔗 تعديل الرابط / الزر", callback_data="admin_edit_button"),
-         InlineKeyboardButton(text=btn_text, callback_data="admin_toggle_bot_btn")],
+        [InlineKeyboardButton(text="🔗 تعديل الرابط", callback_data="admin_edit_url"),
+         InlineKeyboardButton(text="🔘 تعديل نص الزر", callback_data="admin_edit_button")],
+        [InlineKeyboardButton(text=btn_text, callback_data="admin_toggle_bot_btn")],
         [InlineKeyboardButton(text=vip_text, callback_data="admin_toggle_promo_vip")],
         [InlineKeyboardButton(text="💬 رسالة ما بعد الدفع", callback_data="admin_edit_post_payment_msg")],
         [InlineKeyboardButton(text="👁 معاينة الإعلان", callback_data="admin_preview_promo")],
@@ -762,6 +818,7 @@ async def cb_admin_broadcast_menu(callback: types.CallbackQuery, state: FSMConte
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 للإدارة والمستخدمين (في الخاص)", callback_data="start_bw_users")],
         [InlineKeyboardButton(text="🌐 للمجموعات فقط", callback_data="start_bw_groups")],
+        [InlineKeyboardButton(text="🔄 الإذاعات الدورية", callback_data="admin_recurring_bw")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
     ])
     await callback.message.edit_text("📣 <b>ساحر الإذاعة الجديد:</b>\n\nاختر الوجهة التي تريد بدء الإذاعة إليها:", reply_markup=keyboard, parse_mode=ParseMode.HTML)
@@ -961,23 +1018,34 @@ async def execute_broadcast(data: dict, status_msg: types.Message):
 async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id):
         return
-    await state.clear()
+    if state: await state.clear()
     cooldown = await get_setting("cooldown")
     auto_del = await get_setting("auto_delete")
     auto_del_text = "🧹 إيقاف الحذف التلقائي" if auto_del == "true" else "🧹 تشغيل الحذف التلقائي"
+    
+    pw_enabled = await get_setting("private_welcome_enabled")
+    pw_text = "📴 إيقاف رسالة الترحيب (الخاص)" if pw_enabled != "false" else "📱 تشغيل رسالة الترحيب (الخاص)"
+    
+    promo_del = await get_setting("promo_delete_seconds")
+    promo_del_display = "بدون حذف" if not promo_del or promo_del == "0" else f"{promo_del} ثانية"
     
     cooldown_display = "بدون انتظار (0 ثانية)" if cooldown == "0" else f"{cooldown} ثانية"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💬 إعدادات رسالة الترحيب (الخاص)", callback_data="admin_start_settings")],
+        [InlineKeyboardButton(text=pw_text, callback_data="admin_toggle_pw")],
         [InlineKeyboardButton(text="⏱ تعديل مدة الانتظار (Cooldown)", callback_data="admin_edit_cooldown")],
         [InlineKeyboardButton(text=auto_del_text, callback_data="admin_toggle_autodelete")],
+        [InlineKeyboardButton(text=f"🗑 حذف رسالة الترويج بعد: {promo_del_display}", callback_data="admin_edit_promo_del")],
+        [InlineKeyboardButton(text="🧪 مجموعة الاختبار", callback_data="admin_test_group")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
     ])
     text = (
         "⚙️ <b>الإعدادات:</b>\n\n"
+        f"📱 رسالة الترحيب (الخاص): {'مفعلة ✅' if pw_enabled != 'false' else 'معطلة ❌'}\n"
         f"⏱ مدة الانتظار الحالية: {cooldown_display}\n"
-        f"🧹 الحذف التلقائي للإعلان القديم: {'مفعل ✅' if auto_del == 'true' else 'معطل ❌'}"
+        f"🧹 الحذف التلقائي للإعلان القديم: {'مفعل ✅' if auto_del == 'true' else 'معطل ❌'}\n"
+        f"🗑 حذف رسالة الترويج بعد: {promo_del_display}"
     )
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
@@ -1320,7 +1388,7 @@ async def show_campaign_progress(target, campaign_id: int, user_id: int):
     
     campaign = await get_campaign(campaign_id)
     if not campaign or campaign['status'] == 'deleted':
-        text = "❌ هذه الحملة غير متوفرة."
+        text = "❌ This campaign is unavailable."
         if is_callback:
             try:
                 await msg.edit_text(text)
@@ -1354,34 +1422,34 @@ async def show_campaign_progress(target, campaign_id: int, user_id: int):
     
     if status == 'unlocked':
         text = (
-            f"🎉 <b>تم فتح العرض!</b>\n\n"
+            f"🎉 <b>Offer Unlocked!</b>\n\n"
             f"📣 <b>{campaign['name']}</b>\n\n"
-            f"✅ لقد أكملت الشرط بنجاح ({required}/{required} مجموعات).\n\n"
-            f"اضغط الزر أدناه للحصول على العرض."
+            f"✅ You completed the requirement ({required}/{required} groups).\n\n"
+            f"Tap the button below to claim your offer."
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 الحصول على العرض", callback_data=f"camp_unlock_{campaign_id}")]
+            [InlineKeyboardButton(text="🎁 Claim Offer", callback_data=f"camp_unlock_{campaign_id}")]
         ])
     elif campaign['status'] == 'paused' and verified_count == 0:
-        text = "⏸ هذه الحملة متوقفة حالياً."
+        text = "⏸ This campaign is currently paused."
         kb = None
     else:
         bar_filled = min(verified_count, required)
         bar = "▓" * bar_filled + "░" * (required - bar_filled)
         bot_info = await bot.get_me()
         text = (
-            f"🔒 <b>العرض مغلق</b>\n\n"
+            f"🔒 <b>Offer Locked</b>\n\n"
             f"📣 <b>{campaign['name']}</b>\n\n"
-            f"للحصول على العرض يجب عليك إضافة البوت إلى <b>{required}</b> مجموعات.\n\n"
-            f"📊 التقدم: <b>{verified_count}</b> / <b>{required}</b>\n"
+            f"To unlock this offer, add the bot to <b>{required}</b> groups.\n\n"
+            f"📊 Progress: <b>{verified_count}</b> / <b>{required}</b>\n"
             f"<code>{bar}</code>\n"
         )
         if 0 < verified_count < required:
-            text += f"\n⏳ أكمل <b>{required - verified_count}</b> مجموعات أخرى."
+            text += f"\n⏳ Add <b>{required - verified_count}</b> more groups to unlock."
         
         buttons = [
-            [InlineKeyboardButton(text="➕ إضافة البوت إلى المجموعات", url=f"https://t.me/{bot_info.username}?startgroup=camp_{campaign_id}")],
-            [InlineKeyboardButton(text="🔄 تحقق من الإضافة", callback_data=f"camp_verify_{campaign_id}")]
+            [InlineKeyboardButton(text="➕ Add Bot to Groups", url=f"https://t.me/{bot_info.username}?startgroup=camp_{campaign_id}")],
+            [InlineKeyboardButton(text="🔄 Verify Additions", callback_data=f"camp_verify_{campaign_id}")]
         ]
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
@@ -1411,13 +1479,13 @@ async def cb_camp_verify(callback: types.CallbackQuery):
         elapsed = now - _campaign_verify_cooldown[key]
         if elapsed < VERIFY_COOLDOWN_SECONDS:
             remaining = int(VERIFY_COOLDOWN_SECONDS - elapsed)
-            await callback.answer(f"⏳ يرجى الانتظار {remaining} ثوانٍ قبل التحقق مجدداً.", show_alert=True)
+            await callback.answer(f"⏳ Please wait {remaining} seconds before verifying again.", show_alert=True)
             return
     _campaign_verify_cooldown[key] = now
     
     campaign = await get_campaign(campaign_id)
     if not campaign or campaign['status'] == 'deleted':
-        await callback.answer("❌ هذه الحملة غير متوفرة.", show_alert=True)
+        await callback.answer("❌ This campaign is unavailable.", show_alert=True)
         return
     
     # Check if already unlocked
@@ -1431,7 +1499,7 @@ async def cb_camp_verify(callback: types.CallbackQuery):
                 await show_campaign_progress(callback, campaign_id, user_id)
                 return
     
-    await callback.answer("🔄 جاري التحقق من المجموعات...")
+    await callback.answer("🔄 Verifying group additions...")
     
     required = campaign['required_groups']
     bot_info = await bot.get_me()
@@ -1501,7 +1569,7 @@ async def cb_camp_unlock(callback: types.CallbackQuery):
     
     campaign = await get_campaign(campaign_id)
     if not campaign:
-        await callback.answer("❌ الحملة غير موجودة.", show_alert=True)
+        await callback.answer("❌ Campaign not found.", show_alert=True)
         return
     
     # Verify unlocked status
@@ -1512,34 +1580,43 @@ async def cb_camp_unlock(callback: types.CallbackQuery):
         ) as cursor:
             row = await cursor.fetchone()
             if not row or row[0] != 'unlocked':
-                await callback.answer("❌ لم تكمل الشرط بعد.", show_alert=True)
+                await callback.answer("❌ You haven't completed the requirement yet.", show_alert=True)
                 return
     
     await log_event(0, user_id, f"campaign_{campaign_id}_content_delivered")
     
-    unlock_text = campaign['unlock_content'] or "🎁 تم فتح العرض!"
+    unlock_text = campaign['unlock_content'] or "🎁 Offer Unlocked!"
+    sent_msg = None
     try:
         if campaign.get('unlock_media_file_id'):
             if campaign['unlock_media_type'] == 'photo':
-                await callback.message.answer_photo(
+                sent_msg = await callback.message.answer_photo(
                     photo=campaign['unlock_media_file_id'],
-                    caption=f"🔓 <b>محتوى العرض:</b>\n\n{unlock_text}",
+                    caption=f"🔓 <b>Unlocked Content:</b>\n\n{unlock_text}",
                     parse_mode=ParseMode.HTML
                 )
             elif campaign['unlock_media_type'] == 'video':
-                await callback.message.answer_video(
+                sent_msg = await callback.message.answer_video(
                     video=campaign['unlock_media_file_id'],
-                    caption=f"🔓 <b>محتوى العرض:</b>\n\n{unlock_text}",
+                    caption=f"🔓 <b>Unlocked Content:</b>\n\n{unlock_text}",
                     parse_mode=ParseMode.HTML
                 )
         else:
-            await callback.message.answer(
-                f"🔓 <b>محتوى العرض:</b>\n\n{unlock_text}",
+            sent_msg = await callback.message.answer(
+                f"🔓 <b>Unlocked Content:</b>\n\n{unlock_text}",
                 parse_mode=ParseMode.HTML
             )
+        # Schedule auto-delete of unlock content
+        del_sec = campaign.get('unlock_delete_seconds', 0)
+        if del_sec and int(del_sec) > 0 and sent_msg:
+            delete_at = datetime.now() + timedelta(seconds=int(del_sec))
+            async with aiosqlite.connect(DB_NAME) as db:
+                await db.execute("INSERT INTO broadcast_messages (chat_id, message_id, delete_at) VALUES (?, ?, ?)",
+                                 (callback.message.chat.id, sent_msg.message_id, delete_at))
+                await db.commit()
     except Exception as e:
         logger.error(f"Failed to deliver campaign {campaign_id} content: {e}")
-        await callback.message.answer("❌ حدث خطأ أثناء تسليم المحتوى. حاول لاحقاً.")
+        await callback.message.answer("❌ An error occurred. Please try again later.")
     
     await callback.answer()
 
@@ -1713,22 +1790,89 @@ async def process_cw_unlock_media(message: types.Message, state: FSMContext):
         await message.answer("❌ أرسل صورة أو فيديو، أو /skip، أو /cancel.")
         return
     
-    # Show summary
+    # Step 8: Ask about unlock content auto-delete
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="بدون حذف", callback_data="cwdel_0")],
+        [InlineKeyboardButton(text="1 دقيقة", callback_data="cwdel_60"),
+         InlineKeyboardButton(text="5 دقائق", callback_data="cwdel_300")],
+        [InlineKeyboardButton(text="10 دقائق", callback_data="cwdel_600"),
+         InlineKeyboardButton(text="30 دقيقة", callback_data="cwdel_1800")],
+        [InlineKeyboardButton(text="1 ساعة", callback_data="cwdel_3600")]
+    ])
+    await message.answer(
+        "🗑 <b>الخطوة 8:</b> هل تريد حذف محتوى العرض تلقائياً بعد إرساله؟\n"
+        "(لحماية المحتوى من النسخ)",
+        reply_markup=kb, parse_mode=ParseMode.HTML
+    )
+    await state.set_state(CampaignWizard.unlock_delete)
+
+@dp.callback_query(CampaignWizard.unlock_delete)
+async def cb_cw_unlock_delete(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    val = int(callback.data.replace("cwdel_", ""))
+    await state.update_data(unlock_delete_seconds=val)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 يدوية (Manual)", callback_data="cwmode_manual")],
+        [InlineKeyboardButton(text="🔄 دورية (Recurring)", callback_data="cwmode_recurring")]
+    ])
+    await callback.message.answer(
+        "📋 <b>الخطوة 9:</b> اختر وضع الحملة:\n\n"
+        "• <b>يدوية:</b> تنشر فقط عند ضغط الأدمن على زر النشر.\n"
+        "• <b>دورية:</b> تنشر تلقائياً كل فترة محددة.",
+        reply_markup=kb, parse_mode=ParseMode.HTML
+    )
+    await state.set_state(CampaignWizard.mode_select)
+    await callback.answer()
+
+@dp.callback_query(CampaignWizard.mode_select)
+async def cb_cw_mode_select(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    mode = callback.data.replace("cwmode_", "")
+    await state.update_data(mode=mode)
+    if mode == "recurring":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="كل 6 ساعات", callback_data="cwrepeat_6"),
+             InlineKeyboardButton(text="كل 12 ساعة", callback_data="cwrepeat_12")],
+            [InlineKeyboardButton(text="كل 24 ساعة", callback_data="cwrepeat_24"),
+             InlineKeyboardButton(text="كل 48 ساعة", callback_data="cwrepeat_48")]
+        ])
+        await callback.message.answer(
+            "🔄 <b>الخطوة 10:</b> كل كم ساعة تريد إعادة نشر الحملة؟",
+            reply_markup=kb, parse_mode=ParseMode.HTML
+        )
+        await state.set_state(CampaignWizard.repeat_hours)
+    else:
+        await state.update_data(repeat_hours=0)
+        await _show_campaign_wizard_summary(callback, state)
+    await callback.answer()
+
+@dp.callback_query(CampaignWizard.repeat_hours)
+async def cb_cw_repeat_hours(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    hours = int(callback.data.replace("cwrepeat_", ""))
+    await state.update_data(repeat_hours=hours)
+    await _show_campaign_wizard_summary(callback, state)
+    await callback.answer()
+
+async def _show_campaign_wizard_summary(callback, state):
     data = await state.get_data()
+    mode_text = "يدوية" if data.get('mode', 'manual') == 'manual' else f"دورية (كل {data.get('repeat_hours', 0)} ساعة)"
+    del_text = "بدون حذف" if not data.get('unlock_delete_seconds') else f"{data['unlock_delete_seconds']} ثانية"
     summary = (
         f"📋 <b>ملخص الحملة:</b>\n\n"
         f"📌 <b>الاسم:</b> {data['name']}\n"
-        f"🖼 <b>وسائط الإعلان:</b> {'نعم (' + data.get('media_type', '') + ')' if data.get('media_file_id') else 'لا'}\n"
+        f"🖼 <b>وسائط الإعلان:</b> {'نعم' if data.get('media_file_id') else 'لا'}\n"
         f"🔘 <b>نص الزر:</b> {data['button_text']}\n"
         f"👥 <b>المجموعات المطلوبة:</b> {data['required_groups']}\n"
-        f"🖼 <b>وسائط الفتح:</b> {'نعم' if data.get('unlock_media_file_id') else 'لا'}\n\n"
+        f"🗑 <b>حذف المحتوى بعد:</b> {del_text}\n"
+        f"📋 <b>الوضع:</b> {mode_text}\n\n"
         f"هل تريد حفظ الحملة؟"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ حفظ الحملة", callback_data="cmp_save")],
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="cmp_cancel_wizard")]
     ])
-    await message.answer(summary, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.message.answer(summary, reply_markup=kb, parse_mode=ParseMode.HTML)
     await state.set_state(CampaignWizard.confirm)
 
 @dp.callback_query(CampaignWizard.confirm)
@@ -1747,11 +1891,12 @@ async def cb_cw_confirm(callback: types.CallbackQuery, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
             """INSERT INTO campaigns (name, promo_text, media_type, media_file_id, button_text, required_groups, 
-               unlock_content, unlock_media_type, unlock_media_file_id, status, created_at, updated_at) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+               unlock_content, unlock_media_type, unlock_media_file_id, unlock_delete_seconds, mode, repeat_hours, status, created_at, updated_at) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
             (data['name'], data['promo_text'], data.get('media_type'), data.get('media_file_id'),
              data['button_text'], data['required_groups'], data['unlock_content'],
              data.get('unlock_media_type'), data.get('unlock_media_file_id'),
+             data.get('unlock_delete_seconds', 0), data.get('mode', 'manual'), data.get('repeat_hours', 0),
              datetime.now(), datetime.now())
         )
         campaign_id = cursor.lastrowid
@@ -1773,6 +1918,8 @@ async def show_campaign_admin_view(message: types.Message, campaign_id: int):
     
     status_map = {'active': ('🟢', 'نشطة'), 'paused': ('⏸', 'متوقفة'), 'deleted': ('🗑', 'محذوفة')}
     icon, status_text = status_map.get(campaign['status'], ('❓', 'غير معروف'))
+    mode_text = "يدوية" if campaign.get('mode', 'manual') == 'manual' else f"دورية (كل {campaign.get('repeat_hours', 0)} ساعة)"
+    rec_active = campaign.get('recurring_active', 0)
     
     text = (
         f"📣 <b>حملة: {campaign['name']}</b>\n"
@@ -1781,7 +1928,10 @@ async def show_campaign_admin_view(message: types.Message, campaign_id: int):
         f"👥 <b>المجموعات المطلوبة:</b> {campaign['required_groups']}\n"
         f"🔘 <b>نص الزر:</b> {campaign['button_text']}\n"
         f"🖼 <b>وسائط:</b> {'نعم' if campaign.get('media_file_id') else 'لا'}\n"
+        f"📋 <b>الوضع:</b> {mode_text}\n"
     )
+    if campaign.get('mode') == 'recurring':
+        text += f"🔄 <b>النشر الدوري:</b> {'▶️ مفعل' if rec_active else '⏸ متوقف'}\n"
     
     buttons = []
     if campaign['status'] == 'active':
@@ -1791,6 +1941,14 @@ async def show_campaign_admin_view(message: types.Message, campaign_id: int):
         ])
         buttons.append([InlineKeyboardButton(text="📢 نشر للجميع", callback_data=f"cmp_pub_a_{campaign_id}")])
         buttons.append([InlineKeyboardButton(text="🧪 اختبار (إرسال لي)", callback_data=f"cmp_test_{campaign_id}")])
+        test_group = await get_setting("test_group_chat_id")
+        if test_group:
+            buttons.append([InlineKeyboardButton(text="🧪 اختبار في المجموعة", callback_data=f"cmp_testgrp_{campaign_id}")])
+        if campaign.get('mode') == 'recurring':
+            if rec_active:
+                buttons.append([InlineKeyboardButton(text="⏸ إيقاف النشر الدوري", callback_data=f"cmp_recstop_{campaign_id}")])
+            else:
+                buttons.append([InlineKeyboardButton(text="▶️ تشغيل النشر الدوري", callback_data=f"cmp_recstart_{campaign_id}")])
         buttons.append([
             InlineKeyboardButton(text="📊 الإحصائيات", callback_data=f"cmp_stats_{campaign_id}"),
             InlineKeyboardButton(text="⏸ إيقاف", callback_data=f"cmp_pause_{campaign_id}")
@@ -2062,6 +2220,365 @@ async def cb_campaign_test(callback: types.CallbackQuery):
         logger.error(f"Campaign test send failed: {e}")
         await callback.answer("❌ فشل إرسال الاختبار.", show_alert=True)
 
+# --- Private Welcome Toggle ---
+@dp.callback_query(F.data == "admin_toggle_pw")
+async def cb_admin_toggle_pw(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    current = await get_setting("private_welcome_enabled")
+    new_val = "false" if current != "false" else "true"
+    await set_setting("private_welcome_enabled", new_val)
+    await callback.answer("✅ تم التحديث", show_alert=True)
+    await cb_admin_settings(callback, state)
+
+# --- Promo Delete Duration ---
+@dp.callback_query(F.data == "admin_edit_promo_del")
+async def cb_admin_edit_promo_del(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="بدون حذف", callback_data="set_promo_del_0")],
+        [InlineKeyboardButton(text="30 ثانية", callback_data="set_promo_del_30"),
+         InlineKeyboardButton(text="1 دقيقة", callback_data="set_promo_del_60")],
+        [InlineKeyboardButton(text="5 دقائق", callback_data="set_promo_del_300"),
+         InlineKeyboardButton(text="10 دقائق", callback_data="set_promo_del_600")],
+        [InlineKeyboardButton(text="30 دقيقة", callback_data="set_promo_del_1800"),
+         InlineKeyboardButton(text="1 ساعة", callback_data="set_promo_del_3600")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_settings")]
+    ])
+    await callback.message.edit_text("🗑 <b>اختر مدة حذف رسالة الترويج بعد إرسالها:</b>", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("set_promo_del_"))
+async def cb_set_promo_del(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    val = callback.data.replace("set_promo_del_", "")
+    await set_setting("promo_delete_seconds", val)
+    await callback.answer("✅ تم التحديث", show_alert=True)
+    await cb_admin_settings(callback, state)
+
+# --- Test Group Setting ---
+@dp.callback_query(F.data == "admin_test_group")
+async def cb_admin_test_group(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    current = await get_setting("test_group_chat_id")
+    text = (
+        f"🧪 <b>مجموعة الاختبار:</b>\n\n"
+        f"المعرف الحالي: <code>{current or 'غير محدد'}</code>\n\n"
+        f"أرسل معرف (Chat ID) المجموعة.\n"
+        f"لإلغاء أرسل /cancel\n"
+        f"لإزالة المجموعة أرسل /remove"
+    )
+    await callback.message.answer(text, parse_mode=ParseMode.HTML)
+    await state.set_state(AdminEdit.waiting_for_test_group)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_test_group)
+async def process_test_group(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    if message.text == '/remove':
+        await set_setting("test_group_chat_id", "")
+        await message.answer("✅ تم إزالة مجموعة الاختبار.")
+        await state.clear()
+        return
+    text = message.text.strip()
+    if not (text.lstrip('-').isdigit()):
+        await message.answer("❌ يرجى إرسال معرف رقمي صالح (Chat ID).")
+        return
+    await set_setting("test_group_chat_id", text)
+    await message.answer(f"✅ تم تحديد مجموعة الاختبار: <code>{text}</code>", parse_mode=ParseMode.HTML)
+    await state.clear()
+
+# --- Campaign Recurring Start/Stop ---
+@dp.callback_query(F.data.startswith("cmp_recstart_"))
+async def cb_campaign_rec_start(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    campaign_id = int(callback.data.split("_")[-1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE campaigns SET recurring_active=1, updated_at=? WHERE id=?", (datetime.now(), campaign_id))
+        await db.commit()
+    await callback.answer("▶️ تم تشغيل النشر الدوري.", show_alert=True)
+    await show_campaign_admin_view(callback.message, campaign_id)
+
+@dp.callback_query(F.data.startswith("cmp_recstop_"))
+async def cb_campaign_rec_stop(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    campaign_id = int(callback.data.split("_")[-1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE campaigns SET recurring_active=0, updated_at=? WHERE id=?", (datetime.now(), campaign_id))
+        await db.commit()
+    await callback.answer("⏸ تم إيقاف النشر الدوري.", show_alert=True)
+    await show_campaign_admin_view(callback.message, campaign_id)
+
+# --- Campaign Test to Group ---
+@dp.callback_query(F.data.startswith("cmp_testgrp_"))
+async def cb_campaign_test_group(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    campaign_id = int(callback.data.split("_")[-1])
+    test_group = await get_setting("test_group_chat_id")
+    if not test_group:
+        await callback.answer("❌ لم يتم تحديد مجموعة اختبار. اذهب للإعدادات.", show_alert=True)
+        return
+    campaign = await get_campaign(campaign_id)
+    if not campaign:
+        await callback.answer("❌ الحملة غير موجودة.", show_alert=True)
+        return
+    bot_info = await bot.get_me()
+    cta = InlineKeyboardButton(text=campaign['button_text'], url=f"https://t.me/{bot_info.username}?start=camp_{campaign_id}")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[cta]])
+    try:
+        chat_id = int(test_group)
+        if campaign.get('media_file_id'):
+            if campaign['media_type'] == 'photo':
+                await bot.send_photo(chat_id, photo=campaign['media_file_id'], caption=f"🧪 [Test]\n\n{campaign['promo_text']}", reply_markup=kb, parse_mode=ParseMode.HTML)
+            else:
+                await bot.send_video(chat_id, video=campaign['media_file_id'], caption=f"🧪 [Test]\n\n{campaign['promo_text']}", reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await bot.send_message(chat_id, f"🧪 [Test]\n\n{campaign['promo_text']}", reply_markup=kb, parse_mode=ParseMode.HTML)
+        await callback.answer("✅ تم الإرسال لمجموعة الاختبار.", show_alert=True)
+    except Exception as e:
+        logger.error(f"Test group send failed: {e}")
+        await callback.answer("❌ فشل الإرسال لمجموعة الاختبار.", show_alert=True)
+
+# --- Recurring Campaigns Background Task ---
+async def auto_recurring_campaigns():
+    while True:
+        try:
+            await asyncio.sleep(300)  # Check every 5 minutes
+            async with aiosqlite.connect(DB_NAME) as db:
+                async with db.execute(
+                    "SELECT id, repeat_hours, last_broadcast_at FROM campaigns WHERE mode='recurring' AND recurring_active=1 AND status='active'"
+                ) as cursor:
+                    campaigns = await cursor.fetchall()
+            
+            for cid, repeat_hours, last_at in campaigns:
+                if not repeat_hours or repeat_hours <= 0:
+                    continue
+                if last_at:
+                    try:
+                        last_time = datetime.fromisoformat(str(last_at))
+                    except (ValueError, TypeError):
+                        last_time = datetime.min
+                else:
+                    last_time = datetime.min
+                
+                if (datetime.now() - last_time).total_seconds() >= repeat_hours * 3600:
+                    logger.info(f"Recurring campaign {cid}: broadcasting...")
+                    try:
+                        campaign = await get_campaign(cid)
+                        if not campaign: continue
+                        bot_info = await bot.get_me()
+                        cta = InlineKeyboardButton(text=campaign['button_text'], url=f"https://t.me/{bot_info.username}?start=camp_{cid}")
+                        kb = InlineKeyboardMarkup(inline_keyboard=[[cta]])
+                        
+                        async with aiosqlite.connect(DB_NAME) as db:
+                            async with db.execute("SELECT telegram_id FROM users") as cur:
+                                users = await cur.fetchall()
+                            async with db.execute("SELECT chat_id FROM groups WHERE status='active'") as cur:
+                                groups = await cur.fetchall()
+                        
+                        for t in (users + groups):
+                            try:
+                                if campaign.get('media_file_id'):
+                                    if campaign['media_type'] == 'photo':
+                                        await bot.send_photo(t[0], photo=campaign['media_file_id'], caption=campaign['promo_text'], reply_markup=kb, parse_mode=ParseMode.HTML)
+                                    else:
+                                        await bot.send_video(t[0], video=campaign['media_file_id'], caption=campaign['promo_text'], reply_markup=kb, parse_mode=ParseMode.HTML)
+                                else:
+                                    await bot.send_message(t[0], campaign['promo_text'], reply_markup=kb, parse_mode=ParseMode.HTML)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(0.05)
+                        
+                        async with aiosqlite.connect(DB_NAME) as db:
+                            await db.execute("UPDATE campaigns SET last_broadcast_at=? WHERE id=?", (datetime.now(), cid))
+                            await db.commit()
+                        logger.info(f"Recurring campaign {cid}: done.")
+                    except Exception as e:
+                        logger.error(f"Recurring campaign {cid} error: {e}")
+        except Exception as e:
+            logger.error(f"Error in auto_recurring_campaigns: {e}")
+
+# --- Recurring Broadcasts Background Task ---
+async def auto_recurring_broadcasts():
+    while True:
+        try:
+            await asyncio.sleep(300)
+            async with aiosqlite.connect(DB_NAME) as db:
+                async with db.execute(
+                    "SELECT id, target, text, media_id, media_type, is_vip, stars, repeat_hours, last_broadcast_at FROM recurring_broadcasts WHERE is_active=1"
+                ) as cursor:
+                    rows = await cursor.fetchall()
+            
+            for row in rows:
+                rb_id, target, text, media_id, media_type, is_vip, stars, repeat_hours, last_at = row
+                if not repeat_hours or repeat_hours <= 0:
+                    continue
+                if last_at:
+                    try:
+                        last_time = datetime.fromisoformat(str(last_at))
+                    except (ValueError, TypeError):
+                        last_time = datetime.min
+                else:
+                    last_time = datetime.min
+                
+                if (datetime.now() - last_time).total_seconds() >= repeat_hours * 3600:
+                    logger.info(f"Recurring broadcast {rb_id}: sending...")
+                    try:
+                        async with aiosqlite.connect(DB_NAME) as db:
+                            targets = []
+                            if target in ('users', 'all'):
+                                async with db.execute("SELECT telegram_id FROM users") as cur:
+                                    targets += await cur.fetchall()
+                            if target in ('groups', 'all'):
+                                async with db.execute("SELECT chat_id FROM groups WHERE status='active'") as cur:
+                                    targets += await cur.fetchall()
+                        
+                        for t in targets:
+                            try:
+                                if media_id:
+                                    if media_type == 'photo':
+                                        await bot.send_photo(t[0], photo=media_id, caption=text, parse_mode=ParseMode.HTML)
+                                    else:
+                                        await bot.send_video(t[0], video=media_id, caption=text, parse_mode=ParseMode.HTML)
+                                else:
+                                    await bot.send_message(t[0], text, parse_mode=ParseMode.HTML)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(0.05)
+                        
+                        async with aiosqlite.connect(DB_NAME) as db:
+                            await db.execute("UPDATE recurring_broadcasts SET last_broadcast_at=? WHERE id=?", (datetime.now(), rb_id))
+                            await db.commit()
+                        logger.info(f"Recurring broadcast {rb_id}: done.")
+                    except Exception as e:
+                        logger.error(f"Recurring broadcast {rb_id} error: {e}")
+        except Exception as e:
+            logger.error(f"Error in auto_recurring_broadcasts: {e}")
+
+# --- Recurring Broadcasts Admin ---
+@dp.callback_query(F.data == "admin_recurring_bw")
+async def cb_admin_recurring_bw(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT id, target, repeat_hours, is_active, text FROM recurring_broadcasts ORDER BY id DESC") as cursor:
+            rows = await cursor.fetchall()
+    
+    if not rows:
+        text = "🔄 <b>الإذاعات الدورية:</b>\n\nلا توجد إذاعات دورية حالياً."
+    else:
+        text = "🔄 <b>الإذاعات الدورية:</b>\n\n"
+        target_map = {'users': 'مستخدمين', 'groups': 'مجموعات', 'all': 'الجميع'}
+        for row in rows:
+            rb_id, target, repeat_hours, is_active, rb_text = row
+            status_icon = "▶️" if is_active else "⏸"
+            preview = (rb_text[:30] + "...") if rb_text and len(rb_text) > 30 else (rb_text or "")
+            text += f"{status_icon} #{rb_id} | {target_map.get(target, target)} | كل {repeat_hours}h | {preview}\n"
+    
+    buttons = []
+    for row in rows:
+        rb_id, _, _, is_active, _ = row
+        if is_active:
+            buttons.append([
+                InlineKeyboardButton(text=f"⏸ إيقاف #{rb_id}", callback_data=f"rbw_stop_{rb_id}"),
+                InlineKeyboardButton(text=f"🗑 حذف #{rb_id}", callback_data=f"rbw_del_{rb_id}")
+            ])
+        else:
+            buttons.append([
+                InlineKeyboardButton(text=f"▶️ تشغيل #{rb_id}", callback_data=f"rbw_start_{rb_id}"),
+                InlineKeyboardButton(text=f"🗑 حذف #{rb_id}", callback_data=f"rbw_del_{rb_id}")
+            ])
+    buttons.append([InlineKeyboardButton(text="➕ إنشاء إذاعة دورية", callback_data="rbw_create")])
+    buttons.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_broadcast_menu")])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("rbw_stop_"))
+async def cb_rbw_stop(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    rb_id = int(callback.data.split("_")[-1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE recurring_broadcasts SET is_active=0 WHERE id=?", (rb_id,))
+        await db.commit()
+    await callback.answer("⏸ تم الإيقاف.", show_alert=True)
+    await cb_admin_recurring_bw(callback)
+
+@dp.callback_query(F.data.startswith("rbw_start_"))
+async def cb_rbw_start(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    rb_id = int(callback.data.split("_")[-1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE recurring_broadcasts SET is_active=1 WHERE id=?", (rb_id,))
+        await db.commit()
+    await callback.answer("▶️ تم التشغيل.", show_alert=True)
+    await cb_admin_recurring_bw(callback)
+
+@dp.callback_query(F.data.startswith("rbw_del_"))
+async def cb_rbw_del(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    rb_id = int(callback.data.split("_")[-1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM recurring_broadcasts WHERE id=?", (rb_id,))
+        await db.commit()
+    await callback.answer("🗑 تم الحذف.", show_alert=True)
+    await cb_admin_recurring_bw(callback)
+
+# Recurring Broadcast Create - Simple flow using BroadcastWizard states
+@dp.callback_query(F.data == "rbw_create")
+async def cb_rbw_create(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 مستخدمين", callback_data="rbw_target_users")],
+        [InlineKeyboardButton(text="🌐 مجموعات", callback_data="rbw_target_groups")],
+        [InlineKeyboardButton(text="📢 الجميع", callback_data="rbw_target_all")],
+    ])
+    await callback.message.answer("🔄 <b>إنشاء إذاعة دورية:</b>\n\nاختر الهدف:", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("rbw_target_"))
+async def cb_rbw_target(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    target = callback.data.replace("rbw_target_", "")
+    await state.update_data(rbw_target=target)
+    await callback.message.answer("📝 أرسل نص الإذاعة الدورية:\n(لإلغاء أرسل /cancel)", parse_mode=ParseMode.HTML)
+    await state.set_state(AdminEdit.waiting_for_rbw_text)
+    await state.update_data(rbw_target=target, rbw_mode=True)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_rbw_text, F.text)
+async def process_rbw_text(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    await state.update_data(rbw_text=message.html_text or message.text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="كل 6 ساعات", callback_data="rbw_hours_6"),
+         InlineKeyboardButton(text="كل 12 ساعة", callback_data="rbw_hours_12")],
+        [InlineKeyboardButton(text="كل 24 ساعة", callback_data="rbw_hours_24"),
+         InlineKeyboardButton(text="كل 48 ساعة", callback_data="rbw_hours_48")]
+    ])
+    await message.answer("🔄 كل كم ساعة تريد تكرار هذه الإذاعة؟", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await state.set_state(AdminEdit.waiting_for_rbw_hours)
+
+@dp.callback_query(AdminEdit.waiting_for_rbw_hours, F.data.startswith("rbw_hours_"))
+async def cb_rbw_hours(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    data = await state.get_data()
+    hours = int(callback.data.replace("rbw_hours_", ""))
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO recurring_broadcasts (target, text, repeat_hours, is_active, created_at) VALUES (?, ?, ?, 1, ?)",
+            (data.get('rbw_target', 'all'), data.get('rbw_text', ''), hours, datetime.now())
+        )
+        await db.commit()
+    await state.clear()
+    await callback.message.answer(f"✅ تم إنشاء إذاعة دورية (كل {hours} ساعة)!")
+    await callback.answer()
+
 # --- Global Error Handler ---
 # This silently catches unknown/unsupported Telegram update types (e.g. new RichText fields)
 # and prevents the bot from crashing when Telegram adds new API features.
@@ -2084,6 +2601,8 @@ async def main():
     
     # Start background task for auto-deleting broadcasts
     asyncio.create_task(auto_delete_broadcasts())
+    asyncio.create_task(auto_recurring_campaigns())
+    asyncio.create_task(auto_recurring_broadcasts())
     
     # Self-Healing Polling Loop:
     # Catches pydantic validation errors caused by unknown Telegram API updates
