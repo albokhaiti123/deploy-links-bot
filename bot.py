@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -231,11 +232,15 @@ class AdminEdit(StatesGroup):
     waiting_for_test_group = State()
     waiting_for_rbw_text = State()
     waiting_for_rbw_hours = State()
+    waiting_for_custom_btn_text = State()
+    waiting_for_custom_btn_url = State()
+    waiting_for_start_media = State()
 
 class BroadcastWizard(StatesGroup):
     target = State()
     text = State()
     media = State()
+    buttons = State()
     media_type_vip = State()
     stars = State()
     duration = State()
@@ -261,10 +266,18 @@ dp = Dispatcher(storage=MemoryStorage())
 def get_bot_add_url(bot_username: str) -> str:
     return f"https://t.me/{bot_username}?startgroup=add"
 
-def build_promo_keyboard(promo_url: str, promo_button_text: str, bot_username: str, show_bot_btn: str = "true") -> InlineKeyboardMarkup:
+def build_promo_keyboard(promo_url: str, promo_button_text: str, bot_username: str, show_bot_btn: str = "true", custom_buttons_json: str = None) -> InlineKeyboardMarkup:
     keyboard = []
     if promo_button_text and promo_url:
         keyboard.append([InlineKeyboardButton(text=promo_button_text, url=promo_url)])
+    if custom_buttons_json:
+        try:
+            btns = json.loads(custom_buttons_json)
+            for btn in btns:
+                if btn.get('text') and btn.get('url'):
+                    keyboard.append([InlineKeyboardButton(text=btn['text'], url=btn['url'])])
+        except (json.JSONDecodeError, TypeError):
+            pass
     if show_bot_btn == "true":
         keyboard.append([InlineKeyboardButton(text="🤖 Add bot to your group", url=get_bot_add_url(bot_username))])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -285,8 +298,23 @@ async def get_start_message_data(bot_username: str):
             kb.append([InlineKeyboardButton(text=btn2_name, url=btn2_content)])
         else:
             kb.append([InlineKeyboardButton(text=btn2_name, callback_data="start_btn2_click")])
+    
+    # Custom buttons
+    custom_btns_json = await get_setting("start_custom_buttons")
+    if custom_btns_json:
+        try:
+            btns = json.loads(custom_btns_json)
+            for btn in btns:
+                if btn.get('text') and btn.get('url'):
+                    kb.append([InlineKeyboardButton(text=btn['text'], url=btn['url'])])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    
+    # Media info
+    media_id = await get_setting("start_media_id")
+    media_type = await get_setting("start_media_type")
             
-    return start_text, InlineKeyboardMarkup(inline_keyboard=kb)
+    return start_text, InlineKeyboardMarkup(inline_keyboard=kb), media_id, media_type
 
 # --- Utilities ---
 async def log_event(chat_id: int, user_id: int, event_type: str):
@@ -330,7 +358,9 @@ async def trigger_group_promo(message: types.Message, target_user: types.User):
     mention = f"<a href='tg://user?id={target_user.id}'>{user_name}</a>"
     promo_text_formatted = promo_text.replace("{user}", mention)
     
-    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_add_bot_button)
+    promo_custom_buttons = await get_setting("promo_custom_buttons")
+    
+    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_add_bot_button, promo_custom_buttons)
     
     # Auto Delete old message
     if auto_delete == "true":
@@ -455,8 +485,27 @@ async def cmd_start(message: types.Message):
         return
         
     bot_info = await bot.get_me()
-    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
-    await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    text, kb, media_id, media_type = await get_start_message_data(bot_info.username or BOT_USERNAME)
+    sent_msg = None
+    if media_id:
+        if media_type == "photo":
+            sent_msg = await message.answer_photo(photo=media_id, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        elif media_type == "video":
+            sent_msg = await message.answer_video(video=media_id, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            sent_msg = await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:
+        sent_msg = await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    
+    # Schedule self-destruct for welcome message
+    if sent_msg:
+        start_del = await get_setting("start_delete_seconds")
+        if start_del and start_del.isdigit() and int(start_del) > 0:
+            delete_at = datetime.now() + timedelta(seconds=int(start_del))
+            async with aiosqlite.connect(DB_NAME) as db:
+                await db.execute("INSERT INTO broadcast_messages (chat_id, message_id, delete_at) VALUES (?, ?, ?)",
+                                 (message.chat.id, sent_msg.message_id, delete_at))
+                await db.commit()
 
 @dp.callback_query(F.data == "start_btn2_click")
 async def cb_start_btn2_click(callback: types.CallbackQuery):
@@ -595,6 +644,7 @@ async def cb_admin_promo_settings(callback: types.CallbackQuery, state: FSMConte
          InlineKeyboardButton(text="🖼️ تعديل الوسائط", callback_data="admin_edit_media")],
         [InlineKeyboardButton(text="🔗 تعديل الرابط", callback_data="admin_edit_url"),
          InlineKeyboardButton(text="🔘 تعديل نص الزر", callback_data="admin_edit_button")],
+        [InlineKeyboardButton(text="🔗 إدارة الأزرار المخصصة", callback_data="admin_custom_btns_promo")],
         [InlineKeyboardButton(text=btn_text, callback_data="admin_toggle_bot_btn")],
         [InlineKeyboardButton(text=vip_text, callback_data="admin_toggle_promo_vip")],
         [InlineKeyboardButton(text="💬 رسالة ما بعد الدفع", callback_data="admin_edit_post_payment_msg")],
@@ -689,7 +739,8 @@ async def cb_admin_preview_promo(callback: types.CallbackQuery):
     mention = f"<a href='tg://user?id={callback.from_user.id}'>{user_name}</a>"
     promo_text_formatted = promo_text.replace("{user}", mention)
     
-    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_bot_btn)
+    promo_custom_buttons = await get_setting("promo_custom_buttons")
+    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_bot_btn, promo_custom_buttons)
     
     try:
         if is_vip:
@@ -853,7 +904,7 @@ async def process_bw_media(message: types.Message, state: FSMContext):
         
     if message.text == '/skip':
         await state.update_data(media_id=None, media_type=None)
-        await ask_duration(message, state)
+        await _ask_bw_buttons(message, state)
         return
         
     if message.photo:
@@ -863,13 +914,54 @@ async def process_bw_media(message: types.Message, state: FSMContext):
     else:
         await message.answer("❌ يجب إرسال صورة أو فيديو، أو /skip، أو /cancel.")
         return
-        
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 مجانية (مفتوحة)", callback_data="media_free")],
-        [InlineKeyboardButton(text="⭐️ مدفوعة (VIP - بنجوم تيليجرام)", callback_data="media_vip")]
-    ])
-    await message.answer("💎 <b>الخطوة 3:</b> هل تريد أن يكون هذا المحتوى مجانياً أم مدفوعاً (مظلل يفتح بالنجوم)؟", reply_markup=kb, parse_mode=ParseMode.HTML)
-    await state.set_state(BroadcastWizard.media_type_vip)
+    
+    await _ask_bw_buttons(message, state)
+
+async def _ask_bw_buttons(message: types.Message, state: FSMContext):
+    """Ask for inline URL buttons."""
+    await message.answer(
+        "🔗 <b>الخطوة 3:</b> أرسل الأزرار بصيغة:\n"
+        "<code>نص الزر 1 | الرابط 1</code>\n"
+        "<code>نص الزر 2 | الرابط 2</code>\n\n"
+        "كل زر في سطر مستقل. لتخطي أرسل /skip\n"
+        "لإلغاء أرسل /cancel",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(BroadcastWizard.buttons)
+
+@dp.message(BroadcastWizard.buttons)
+async def process_bw_buttons(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    if message.text == '/skip':
+        await state.update_data(custom_buttons=None)
+    else:
+        buttons = []
+        for line in message.text.strip().split('\n'):
+            parts = line.split('|', 1)
+            if len(parts) == 2:
+                btn_text = parts[0].strip()
+                btn_url = parts[1].strip()
+                if btn_text and btn_url:
+                    buttons.append({"text": btn_text, "url": btn_url})
+        if not buttons:
+            await message.answer("❌ تنسيق خاطئ. أرسل بصيغة:\n<code>نص الزر | الرابط</code>\nأو /skip", parse_mode=ParseMode.HTML)
+            return
+        await state.update_data(custom_buttons=json.dumps(buttons, ensure_ascii=False))
+    
+    data = await state.get_data()
+    if data.get('media_id'):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🟢 مجانية (مفتوحة)", callback_data="media_free")],
+            [InlineKeyboardButton(text="⭐️ مدفوعة (VIP - بنجوم تيليجرام)", callback_data="media_vip")]
+        ])
+        await message.answer("💎 <b>الخطوة 4:</b> هل تريد أن يكون هذا المحتوى مجانياً أم مدفوعاً (مظلل يفتح بالنجوم)؟", reply_markup=kb, parse_mode=ParseMode.HTML)
+        await state.set_state(BroadcastWizard.media_type_vip)
+    else:
+        await state.update_data(is_vip=False, stars=0)
+        await ask_duration(message, state)
 
 @dp.callback_query(BroadcastWizard.media_type_vip)
 async def cb_bw_media_type(callback: types.CallbackQuery, state: FSMContext):
@@ -923,14 +1015,22 @@ async def cb_bw_duration(callback: types.CallbackQuery, state: FSMContext):
     dur_ar = "لا تُحذف" if mins == 0 else f"تُحذف بعد {mins} دقيقة"
     vip_ar = f"مدفوعة بـ {data.get('stars', 0)} نجمة ⭐️" if data.get('is_vip') else "مجانية"
     
+    btns_count = 0
+    if data.get('custom_buttons'):
+        try:
+            btns_count = len(json.loads(data['custom_buttons']))
+        except: pass
+    
     summary = (
         f"📋 <b>ملخص الإذاعة النهائي:</b>\n\n"
         f"👥 <b>الوجهة:</b> {target_ar}\n"
         f"🖼 <b>الوسائط:</b> {'نعم' if data.get('media_id') else 'لا'} ({vip_ar})\n"
+        f"🔗 <b>الأزرار:</b> {btns_count} أزرار\n"
         f"⏳ <b>التدمير الذاتي:</b> {dur_ar}\n\n"
         f"هل أنت متأكد من الإرسال الآن؟"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👁 معاينة", callback_data="bw_preview")],
         [InlineKeyboardButton(text="✅ إرسال الآن", callback_data="confirm_send")],
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="cancel_wizard")]
     ])
@@ -944,6 +1044,23 @@ async def cb_bw_confirm(callback: types.CallbackQuery, state: FSMContext):
     if callback.data == "cancel_wizard":
         await callback.message.answer("❌ تم إلغاء الإذاعة.")
         await state.clear()
+        await callback.answer()
+        return
+    
+    if callback.data == "bw_preview":
+        data = await state.get_data()
+        bw_kb = _build_broadcast_keyboard(data.get('custom_buttons'))
+        try:
+            if data.get('media_id'):
+                if data.get('media_type') == 'photo':
+                    await callback.message.answer_photo(photo=data['media_id'], caption=f"👁 <b>[معاينة]</b>\n\n{data['text']}", reply_markup=bw_kb, parse_mode=ParseMode.HTML)
+                else:
+                    await callback.message.answer_video(video=data['media_id'], caption=f"👁 <b>[معاينة]</b>\n\n{data['text']}", reply_markup=bw_kb, parse_mode=ParseMode.HTML)
+            else:
+                await callback.message.answer(f"👁 <b>[معاينة]</b>\n\n{data['text']}", reply_markup=bw_kb, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            await callback.message.answer(f"❌ خطأ في المعاينة: {e}")
+        await callback.answer()
         return
         
     data = await state.get_data()
@@ -967,6 +1084,7 @@ async def execute_broadcast(data: dict, status_msg: types.Message):
     success = 0
     dur = data.get('duration_mins', 0)
     delete_at = datetime.now() + timedelta(minutes=dur) if dur > 0 else None
+    bw_kb = _build_broadcast_keyboard(data.get('custom_buttons'))
     
     for t in targets:
         chat_id = t[0]
@@ -987,11 +1105,11 @@ async def execute_broadcast(data: dict, status_msg: types.Message):
                 )
             elif data.get('media_id'):
                 if data['media_type'] == 'photo':
-                    sent_msg = await bot.send_photo(chat_id, photo=data['media_id'], caption=data['text'], parse_mode=ParseMode.HTML)
+                    sent_msg = await bot.send_photo(chat_id, photo=data['media_id'], caption=data['text'], reply_markup=bw_kb, parse_mode=ParseMode.HTML)
                 else:
-                    sent_msg = await bot.send_video(chat_id, video=data['media_id'], caption=data['text'], parse_mode=ParseMode.HTML)
+                    sent_msg = await bot.send_video(chat_id, video=data['media_id'], caption=data['text'], reply_markup=bw_kb, parse_mode=ParseMode.HTML)
             else:
-                sent_msg = await bot.send_message(chat_id, data['text'], parse_mode=ParseMode.HTML)
+                sent_msg = await bot.send_message(chat_id, data['text'], reply_markup=bw_kb, parse_mode=ParseMode.HTML)
                 
             if sent_msg and delete_at:
                 async with aiosqlite.connect(DB_NAME) as db2:
@@ -1031,12 +1149,16 @@ async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
     
     cooldown_display = "بدون انتظار (0 ثانية)" if cooldown == "0" else f"{cooldown} ثانية"
     
+    start_del = await get_setting("start_delete_seconds")
+    start_del_display = "بدون حذف" if not start_del or start_del == "0" else f"{start_del} ثانية"
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💬 إعدادات رسالة الترحيب (الخاص)", callback_data="admin_start_settings")],
         [InlineKeyboardButton(text=pw_text, callback_data="admin_toggle_pw")],
         [InlineKeyboardButton(text="⏱ تعديل مدة الانتظار (Cooldown)", callback_data="admin_edit_cooldown")],
         [InlineKeyboardButton(text=auto_del_text, callback_data="admin_toggle_autodelete")],
         [InlineKeyboardButton(text=f"🗑 حذف رسالة الترويج بعد: {promo_del_display}", callback_data="admin_edit_promo_del")],
+        [InlineKeyboardButton(text=f"🗑 حذف رسالة الترحيب بعد: {start_del_display}", callback_data="admin_edit_start_del")],
         [InlineKeyboardButton(text="🧪 مجموعة الاختبار", callback_data="admin_test_group")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")]
     ])
@@ -1045,7 +1167,8 @@ async def cb_admin_settings(callback: types.CallbackQuery, state: FSMContext):
         f"📱 رسالة الترحيب (الخاص): {'مفعلة ✅' if pw_enabled != 'false' else 'معطلة ❌'}\n"
         f"⏱ مدة الانتظار الحالية: {cooldown_display}\n"
         f"🧹 الحذف التلقائي للإعلان القديم: {'مفعل ✅' if auto_del == 'true' else 'معطل ❌'}\n"
-        f"🗑 حذف رسالة الترويج بعد: {promo_del_display}"
+        f"🗑 حذف رسالة الترويج بعد: {promo_del_display}\n"
+        f"🗑 حذف رسالة الترحيب بعد: {start_del_display}"
     )
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     await callback.answer()
@@ -1057,9 +1180,11 @@ async def cb_admin_start_settings(callback: types.CallbackQuery, state: FSMConte
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 تعديل نص رسالة الترحيب", callback_data="admin_edit_start_msg")],
+        [InlineKeyboardButton(text="🖼️ تعديل الوسائط", callback_data="admin_edit_start_media")],
         [InlineKeyboardButton(text="🔘 تعديل اسم الزر الإضافي", callback_data="admin_edit_btn2_name")],
         [InlineKeyboardButton(text="🔗 جعله رابط (URL)", callback_data="admin_edit_btn2_url"),
          InlineKeyboardButton(text="💬 جعله رسالة نصية", callback_data="admin_edit_btn2_text")],
+        [InlineKeyboardButton(text="🔗 إدارة الأزرار المخصصة", callback_data="admin_custom_btns_start")],
         [InlineKeyboardButton(text="👁 معاينة رسالة الترحيب", callback_data="admin_preview_start")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_settings")]
     ])
@@ -1072,8 +1197,17 @@ async def cb_admin_start_settings(callback: types.CallbackQuery, state: FSMConte
 async def cb_admin_preview_start(callback: types.CallbackQuery):
     if not await is_admin(callback.from_user.id): return
     bot_info = await bot.get_me()
-    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
-    await callback.message.answer(f"👁 <b>معاينة الترحيب:</b>\n\n{text}", reply_markup=kb, parse_mode=ParseMode.HTML)
+    text, kb, media_id, media_type = await get_start_message_data(bot_info.username or BOT_USERNAME)
+    preview_text = f"👁 <b>معاينة الترحيب:</b>\n\n{text}"
+    if media_id:
+        if media_type == "photo":
+            await callback.message.answer_photo(photo=media_id, caption=preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        elif media_type == "video":
+            await callback.message.answer_video(video=media_id, caption=preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await callback.message.answer(preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:
+        await callback.message.answer(preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_edit_start_msg")
@@ -2578,6 +2712,193 @@ async def cb_rbw_hours(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer(f"✅ تم إنشاء إذاعة دورية (كل {hours} ساعة)!")
     await callback.answer()
+
+# --- Helper: Build keyboard from custom buttons JSON ---
+def _build_broadcast_keyboard(custom_buttons_json: str = None):
+    if not custom_buttons_json:
+        return None
+    try:
+        btns = json.loads(custom_buttons_json)
+        keyboard = []
+        for btn in btns:
+            if btn.get('text') and btn.get('url'):
+                keyboard.append([InlineKeyboardButton(text=btn['text'], url=btn['url'])])
+        return InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+# --- Custom Buttons Management (Promo) ---
+@dp.callback_query(F.data == "admin_custom_btns_promo")
+async def cb_custom_btns_promo(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await _show_custom_btns_menu(callback, "promo_custom_buttons", "admin_promo_settings")
+
+@dp.callback_query(F.data == "admin_custom_btns_start")
+async def cb_custom_btns_start(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    await _show_custom_btns_menu(callback, "start_custom_buttons", "admin_start_settings")
+
+async def _show_custom_btns_menu(callback, setting_key: str, back_callback: str):
+    raw = await get_setting(setting_key)
+    btns_list = []
+    if raw:
+        try:
+            btns_list = json.loads(raw)
+        except: pass
+    
+    if not btns_list:
+        text = "🔗 <b>الأزرار المخصصة:</b>\n\nلا توجد أزرار مخصصة حالياً."
+    else:
+        text = "🔗 <b>الأزرار المخصصة:</b>\n\n"
+        for i, btn in enumerate(btns_list, 1):
+            text += f"{i}. <b>{btn.get('text', '?')}</b> → {btn.get('url', '?')}\n"
+    
+    buttons = []
+    for i, btn in enumerate(btns_list):
+        buttons.append([InlineKeyboardButton(text=f"🗑 حذف: {btn.get('text', '?')[:20]}", callback_data=f"del_cbtn_{setting_key}_{i}")])
+    buttons.append([InlineKeyboardButton(text="➕ إضافة زر جديد", callback_data=f"add_cbtn_{setting_key}")])
+    buttons.append([InlineKeyboardButton(text="🔙 رجوع", callback_data=back_callback)])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except TelegramAPIError:
+        await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("del_cbtn_"))
+async def cb_del_custom_btn(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id): return
+    parts = callback.data.split("_", 3)  # del_cbtn_<key>_<index>
+    if len(parts) < 4: return
+    setting_key = parts[2] + "_" + parts[3].rsplit("_", 1)[0] if parts[3].count("_") > 0 else parts[2]
+    # Parse: del_cbtn_promo_custom_buttons_0 or del_cbtn_start_custom_buttons_0
+    raw_data = callback.data[len("del_cbtn_"):]
+    # Find the last _ which is the index
+    last_idx = raw_data.rfind("_")
+    setting_key = raw_data[:last_idx]
+    index = int(raw_data[last_idx+1:])
+    
+    raw = await get_setting(setting_key)
+    btns = json.loads(raw) if raw else []
+    if 0 <= index < len(btns):
+        btns.pop(index)
+    await set_setting(setting_key, json.dumps(btns, ensure_ascii=False) if btns else "")
+    await callback.answer("🗑 تم الحذف.", show_alert=True)
+    
+    back_cb = "admin_promo_settings" if "promo" in setting_key else "admin_start_settings"
+    await _show_custom_btns_menu(callback, setting_key, back_cb)
+
+@dp.callback_query(F.data.startswith("add_cbtn_"))
+async def cb_add_custom_btn(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    setting_key = callback.data[len("add_cbtn_"):]
+    await state.update_data(cbtn_setting_key=setting_key)
+    await callback.message.answer(
+        "🔗 أرسل <b>نص الزر</b> الذي سيظهر للمستخدم:\n"
+        "لإلغاء أرسل /cancel",
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(AdminEdit.waiting_for_custom_btn_text)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_custom_btn_text)
+async def process_custom_btn_text(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    await state.update_data(cbtn_text=message.text.strip())
+    await message.answer("🔗 الآن أرسل <b>الرابط (URL)</b> المخفي خلف الزر:\nلإلغاء أرسل /cancel", parse_mode=ParseMode.HTML)
+    await state.set_state(AdminEdit.waiting_for_custom_btn_url)
+
+@dp.message(AdminEdit.waiting_for_custom_btn_url)
+async def process_custom_btn_url(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    url = message.text.strip()
+    if not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
+        await message.answer("❌ يجب أن يبدأ الرابط بـ http:// أو https:// أو tg://")
+        return
+    
+    data = await state.get_data()
+    setting_key = data['cbtn_setting_key']
+    btn_text = data['cbtn_text']
+    await state.clear()
+    
+    raw = await get_setting(setting_key)
+    btns = json.loads(raw) if raw else []
+    btns.append({"text": btn_text, "url": url})
+    await set_setting(setting_key, json.dumps(btns, ensure_ascii=False))
+    await message.answer(f"✅ تم إضافة الزر: <b>{btn_text}</b>", parse_mode=ParseMode.HTML)
+
+# --- Welcome Media Handler ---
+@dp.callback_query(F.data == "admin_edit_start_media")
+async def cb_admin_edit_start_media(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    current_type = await get_setting("start_media_type")
+    text = (
+        f"🖼️ <b>وسائط رسالة الترحيب:</b>\n\n"
+        f"الحالية: {current_type or 'لا توجد'}\n\n"
+        f"أرسل صورة أو فيديو لتعيينها.\n"
+        f"لإزالة الوسائط أرسل /remove\n"
+        f"لإلغاء أرسل /cancel"
+    )
+    await callback.message.answer(text, parse_mode=ParseMode.HTML)
+    await state.set_state(AdminEdit.waiting_for_start_media)
+    await callback.answer()
+
+@dp.message(AdminEdit.waiting_for_start_media, F.photo | F.video | F.text)
+async def process_start_media(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    if message.text == '/remove':
+        await set_setting("start_media_id", "")
+        await set_setting("start_media_type", "")
+        await message.answer("✅ تم إزالة الوسائط.")
+        await state.clear()
+        return
+    if message.photo:
+        await set_setting("start_media_id", message.photo[-1].file_id)
+        await set_setting("start_media_type", "photo")
+        await message.answer("✅ تم تعيين صورة لرسالة الترحيب.")
+    elif message.video:
+        await set_setting("start_media_id", message.video.file_id)
+        await set_setting("start_media_type", "video")
+        await message.answer("✅ تم تعيين فيديو لرسالة الترحيب.")
+    else:
+        await message.answer("❌ أرسل صورة أو فيديو، أو /remove، أو /cancel.")
+        return
+    await state.clear()
+
+# --- Welcome Self-Destruct Duration ---
+@dp.callback_query(F.data == "admin_edit_start_del")
+async def cb_admin_edit_start_del(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="بدون حذف", callback_data="set_start_del_0")],
+        [InlineKeyboardButton(text="30 ثانية", callback_data="set_start_del_30"),
+         InlineKeyboardButton(text="1 دقيقة", callback_data="set_start_del_60")],
+        [InlineKeyboardButton(text="5 دقائق", callback_data="set_start_del_300"),
+         InlineKeyboardButton(text="10 دقائق", callback_data="set_start_del_600")],
+        [InlineKeyboardButton(text="30 دقيقة", callback_data="set_start_del_1800"),
+         InlineKeyboardButton(text="1 ساعة", callback_data="set_start_del_3600")],
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_settings")]
+    ])
+    await callback.message.edit_text("🗑 <b>اختر مدة حذف رسالة الترحيب بعد إرسالها:</b>", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("set_start_del_"))
+async def cb_set_start_del(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id): return
+    val = callback.data.replace("set_start_del_", "")
+    await set_setting("start_delete_seconds", val)
+    await callback.answer("✅ تم التحديث", show_alert=True)
+    await cb_admin_settings(callback, state)
 
 # --- Global Error Handler ---
 # This silently catches unknown/unsupported Telegram update types (e.g. new RichText fields)
