@@ -65,6 +65,8 @@ _DEFAULT_SETTINGS = {
     "private_welcome_enabled": "true",
     "promo_delete_seconds": "0",
     "test_group_chat_id": "",
+    "start_media_id": "",
+    "start_media_type": "",
 }
 
 
@@ -204,6 +206,19 @@ async def init_db() -> None:
                 repeat_hours INTEGER DEFAULT 24,
                 is_active INTEGER DEFAULT 1,
                 last_broadcast_at TIMESTAMP,
+                created_at TIMESTAMP
+            )
+        """)
+
+        # ── Custom buttons table ─────────────────────────────────
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS custom_buttons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context TEXT NOT NULL,
+                label TEXT NOT NULL,
+                url TEXT NOT NULL,
+                position INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
                 created_at TIMESTAMP
             )
         """)

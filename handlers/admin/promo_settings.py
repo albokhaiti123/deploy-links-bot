@@ -40,6 +40,7 @@ async def cb_admin_promo_settings(callback: types.CallbackQuery, state: FSMConte
         [InlineKeyboardButton(text=btn_text, callback_data="admin_toggle_bot_btn")],
         [InlineKeyboardButton(text=vip_text, callback_data="admin_toggle_promo_vip")],
         [InlineKeyboardButton(text="💬 رسالة ما بعد الدفع", callback_data="admin_edit_post_payment_msg")],
+        [InlineKeyboardButton(text="🔘 أزرار مخصصة", callback_data="btn_list_promo")],
         [InlineKeyboardButton(text="👁 معاينة الإعلان", callback_data="admin_preview_promo")],
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")],
     ])
@@ -147,7 +148,7 @@ async def cb_admin_preview_promo(callback: types.CallbackQuery):
     user_name = callback.from_user.first_name.replace("<", "&lt;").replace(">", "&gt;")
     mention = f"<a href='tg://user?id={callback.from_user.id}'>{user_name}</a>"
     promo_text_formatted = promo_text.replace("{user}", mention)
-    keyboard = build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_bot_btn)
+    keyboard = await build_promo_keyboard(promo_url, promo_button_text, bot_info.username or BOT_USERNAME, show_bot_btn)
 
     try:
         if is_vip:

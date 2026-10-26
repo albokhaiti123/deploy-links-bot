@@ -31,16 +31,24 @@ def get_bot_add_url(bot_username: str) -> str:
     return f"https://t.me/{bot_username}?startgroup=add"
 
 
-def build_promo_keyboard(
+async def build_promo_keyboard(
     promo_url: str,
     promo_button_text: str,
     bot_username: str,
     show_bot_btn: str = "true",
 ) -> InlineKeyboardMarkup:
-    """Build the inline keyboard for promo messages."""
+    """Build the inline keyboard for promo messages (including custom buttons)."""
+    from models.custom_buttons import get_buttons
+
     keyboard = []
     if promo_button_text and promo_url:
         keyboard.append([InlineKeyboardButton(text=promo_button_text, url=promo_url)])
+
+    # Add custom buttons
+    custom = await get_buttons("promo", active_only=True)
+    for btn in custom:
+        keyboard.append([InlineKeyboardButton(text=btn["label"], url=btn["url"])])
+
     if show_bot_btn == "true":
         keyboard.append([InlineKeyboardButton(
             text="🤖 Add bot to your group",
@@ -54,6 +62,8 @@ async def get_start_message_data(bot_username: str) -> tuple[str, InlineKeyboard
     Build welcome message text and keyboard for /start in private chat.
     Returns (text, InlineKeyboardMarkup).
     """
+    from models.custom_buttons import get_buttons
+
     s = await get_many_settings(
         "start_message", "start_btn2_name", "start_btn2_type", "start_btn2_content"
     )
@@ -70,6 +80,11 @@ async def get_start_message_data(bot_username: str) -> tuple[str, InlineKeyboard
             kb.append([InlineKeyboardButton(text=btn2_name, url=s["start_btn2_content"])])
         else:
             kb.append([InlineKeyboardButton(text=btn2_name, callback_data="start_btn2_click")])
+
+    # Add custom buttons
+    custom = await get_buttons("welcome", active_only=True)
+    for btn in custom:
+        kb.append([InlineKeyboardButton(text=btn["label"], url=btn["url"])])
 
     return start_text, InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -113,7 +128,7 @@ async def trigger_group_promo(message, target_user) -> None:
     promo_text_formatted = s["promo_text"].replace("{user}", mention)
 
     # ── Build keyboard ──
-    keyboard = build_promo_keyboard(
+    keyboard = await build_promo_keyboard(
         s["promo_url"], s["promo_button_text"],
         bot_info.username or BOT_USERNAME, s["show_add_bot_button"],
     )

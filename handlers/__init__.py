@@ -17,6 +17,7 @@ from handlers.admin.recurring import router as admin_recurring_router
 from handlers.admin.stats import router as admin_stats_router
 from handlers.admin.admins import router as admin_admins_router
 from handlers.admin.campaigns import router as admin_campaigns_router
+from handlers.admin.button_manager import router as admin_button_manager_router
 
 
 def register_all_routers(dp: Dispatcher) -> None:
@@ -37,4 +38,5 @@ def register_all_routers(dp: Dispatcher) -> None:
         admin_stats_router,
         admin_admins_router,
         admin_campaigns_router,
+        admin_button_manager_router,
     )

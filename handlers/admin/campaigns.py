@@ -339,6 +339,8 @@ async def show_campaign_admin_view(message: types.Message, campaign_id: int):
         InlineKeyboardButton(text="🧪 اختبار (لي)", callback_data=f"cmp_test_{campaign_id}"),
         InlineKeyboardButton(text="🧪 اختبار (مجموعة)", callback_data=f"cmp_testgrp_{campaign_id}"),
     ])
+    buttons.append([InlineKeyboardButton(text="👁 معاينة الحملة", callback_data=f"cmp_preview_{campaign_id}")])
+    buttons.append([InlineKeyboardButton(text="🔘 أزرار مخصصة", callback_data=f"btn_list_campaign_{campaign_id}")])
     if campaign.get("mode") == "recurring":
         if campaign.get("recurring_active"):
             buttons.append([InlineKeyboardButton(text="⏸ إيقاف النشر الدوري", callback_data=f"cmp_recstop_{campaign_id}")])
@@ -487,3 +489,38 @@ async def cb_cmp_rec_stop(callback: types.CallbackQuery):
     await set_campaign_recurring(cid, False)
     await callback.answer("⏸ تم إيقاف النشر الدوري.", show_alert=True)
     await show_campaign_admin_view(callback.message, cid)
+
+
+# ── Campaign Preview ─────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("cmp_preview_"))
+async def cb_cmp_preview(callback: types.CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    cid = int(callback.data.split("_")[-1])
+    campaign = await get_campaign(cid)
+    if not campaign:
+        await callback.answer("❌ الحملة غير موجودة.", show_alert=True)
+        return
+    bot_info = await bot.get_me()
+    cta = InlineKeyboardButton(text=campaign["button_text"], url=f"https://t.me/{bot_info.username}?start=camp_{cid}")
+
+    # Include custom buttons
+    from models.custom_buttons import get_buttons
+    custom = await get_buttons(f"campaign_{cid}", active_only=True)
+    kb_rows = [[cta]]
+    for btn in custom:
+        kb_rows.append([InlineKeyboardButton(text=btn["label"], url=btn["url"])])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+    try:
+        await send_media_message(
+            bot, callback.from_user.id,
+            f"👁 <b>معاينة الحملة #{cid}:</b>\n\n{campaign['promo_text']}",
+            media_id=campaign.get("media_file_id"),
+            media_type=campaign.get("media_type"),
+            keyboard=kb,
+        )
+        await callback.answer("✅ تم إرسال المعاينة.", show_alert=True)
+    except Exception as e:
+        await callback.answer(f"❌ خطأ: {str(e)[:100]}", show_alert=True)
