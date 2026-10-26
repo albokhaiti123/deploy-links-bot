@@ -4,14 +4,14 @@
 
 | # | Phase | Status | Started | Completed | Notes |
 |---|-------|--------|---------|-----------|-------|
-| 0 | Revert `30139dd` → `c5da191` | ✅ Done | 2026-10-18 | 2026-10-18 | Commit `af995ed`, pushed to main |
-| 1 | Infrastructure | ✅ Done | 2026-10-19 | 2026-10-19 | Commit `0d2aa4c`, pushed to `v2-redesign` |
-| 2 | Data Layer | 🔲 Not Started | — | — | |
-| 3 | Services | 🔲 Not Started | — | — | |
-| 4 | Handlers — Core | 🔲 Not Started | — | — | |
-| 5 | Handlers — Admin | 🔲 Not Started | — | — | |
-| 6 | Background Tasks + Main | 🔲 Not Started | — | — | |
-| 7 | Verification | 🔲 Not Started | — | — | |
+| 0 | Revert `30139dd` → `c5da191` | ✅ Done | 2026-10-18 | 2026-10-18 | Commit `af995ed` |
+| 1 | Infrastructure | ✅ Done | 2026-10-19 | 2026-10-19 | Commit `0d2aa4c` |
+| 2 | Data Layer | ✅ Done | 2026-10-19 | 2026-10-26 | Commit `c3e966f` |
+| 3 | Services | ✅ Done | 2026-10-26 | 2026-10-26 | Commit `6a50b00` |
+| 4 | Handlers — Core | ✅ Done | 2026-10-26 | 2026-10-26 | Commit `4ee2097` |
+| 5 | Handlers — Admin | ✅ Done | 2026-10-26 | 2026-10-26 | Commit `4ee2097` |
+| 6 | Background Tasks + Main | ✅ Done | 2026-10-26 | 2026-10-26 | Commit `4ee2097` |
+| 7 | Verification | ✅ Done | 2026-10-26 | 2026-10-26 | 31/31 imports pass |
 | 8 | New Features | 🔲 Not Started | — | — | |
 | 9 | Final Testing | 🔲 Not Started | — | — | |
 | 10 | Reports & Deployment | 🔲 Not Started | — | — | |
@@ -21,147 +21,186 @@
 ## Phase Reports
 
 ### Phase 0: Revert Report
-
-**Date:** 2026-10-18  
-**Commit reverted:** `30139dd` (feat: custom buttons, media, preview, self-destruct enhancements)  
-**Restored to:** `c5da191` (feat: add all 12 post-testing modifications)  
-**Method:** `git checkout c5da191 -- bot.py` → new commit `af995ed`  
-**Files affected:** `bot.py` only (341 insertions removed, 20 deletions restored)  
-**Database impact:** None — the reverted code only read from `settings` table using existing keys; no schema changes were applied to `bot.db`  
-**Verification:** `py_compile` passed, pushed to `main` branch  
+**Date:** 2026-10-18 | **Commit:** `af995ed` | **Branch:** `main`
+Reverted `30139dd` back to `c5da191`. Only `bot.py` affected. Database untouched.
 
 ---
 
 ### Phase 1: Infrastructure Report
+**Date:** 2026-10-19 | **Commit:** `0d2aa4c` | **Branch:** `v2-redesign`
 
-**Date:** 2026-10-19  
-**Commit:** `0d2aa4c`  
-**Branch:** `v2-redesign`  
-**Files created:** 14 files (4 core modules + 9 `__init__.py` + 1 states module)
+Created 9 packages, 4 core modules (`config.py`, `logging_config.py`, `bot.py`, `database.py`), 1 states module. All 14 verification tests passed. Database compatibility confirmed with existing `bot.db`.
 
-#### What Was Built
-
-##### 1. Directory Structure (9 packages)
-```
-core/           → Framework & infrastructure (config, bot, database, logging)
-models/         → Data access layer (empty, ready for Phase 2)
-services/       → Business logic (empty, ready for Phase 3)
-handlers/       → Telegram update handlers (empty, ready for Phase 4)
-handlers/admin/ → Admin panel handlers (empty, ready for Phase 5)
-handlers/campaigns/ → Campaign user handlers (empty, ready for Phase 4)
-states/         → FSM state definitions
-tasks/          → Background tasks (empty, ready for Phase 6)
-utils/          → Shared utilities (empty, ready for Phase 3)
-```
-
-##### 2. `core/config.py` — Configuration Module
-- Loads `.env` via `python-dotenv`
-- Exports typed constants: `BOT_TOKEN` (str), `ADMIN_ID` (int), `BOT_USERNAME` (str), `DB_NAME` (str)
-- `validate_config()` function for startup validation
-- **Verified:** Reads actual `.env` correctly (ADMIN_ID=5413659275)
-
-##### 3. `core/logging_config.py` — Logging Module
-- `setup_logging()` configures root logger
-- Same format as original: `%(asctime)s - %(name)s - %(levelname)s - %(message)s`
-- Exports `logger` for use across the project
-
-##### 4. `core/bot.py` — Bot & Dispatcher Singletons
-- Creates `bot = Bot(token=BOT_TOKEN)` and `dp = Dispatcher(storage=MemoryStorage())`
-- Single import point: `from core.bot import bot, dp`
-- **Key design:** All handlers and services import from here — prevents circular imports
-
-##### 5. `core/database.py` — Database Manager
-- `get_db()` — async context manager returning aiosqlite connection
-- `init_db()` — creates all 9 tables + column migrations + 19 default settings
-- `_try_add_column()` — safe ALTER TABLE helper
-
-**Tables created (exact match with original `bot.py` L30-163):**
-
-| Table | Columns | Purpose |
-|-------|---------|---------|
-| `groups` | chat_id PK, title, chat_type, status, added_at, updated_at, last_promo_msg_id, added_by | Bot groups |
-| `users` | telegram_id PK, username, first_name, created_at | Bot users |
-| `settings` | key PK, value | Key-value config |
-| `events` | id PK, chat_id, telegram_user_id, event_type, created_at | Event log |
-| `admins` | telegram_id PK, added_at | Admin list |
-| `broadcast_messages` | id PK, chat_id, message_id, delete_at | Timed deletion queue |
-| `campaigns` | id PK, name, promo_text, media_*, button_text, required_groups, unlock_*, status, mode, repeat_hours, recurring_active, last_broadcast_at, created_at, updated_at | Campaign definitions |
-| `campaign_user_progress` | id PK, campaign_id, user_id, verified_count, status, created_at, updated_at, UNIQUE | User progress |
-| `campaign_groups` | id PK, campaign_id, user_id, chat_id, chat_title, verified, verified_at, UNIQUE | Verified groups |
-| `recurring_broadcasts` | id PK, target, text, media_id, media_type, is_vip, stars, repeat_hours, is_active, last_broadcast_at, created_at | Recurring broadcasts |
-
-**Default settings (19 keys — exact match with original L165-188):**
-`promo_enabled`, `promo_text`, `promo_url`, `promo_button_text`, `cooldown`, `promo_media_id`, `promo_media_type`, `auto_delete`, `show_add_bot_button`, `promo_is_vip`, `promo_stars`, `promo_post_payment_msg`, `start_message`, `start_btn2_name`, `start_btn2_type`, `start_btn2_content`, `private_welcome_enabled`, `promo_delete_seconds`, `test_group_chat_id`
-
-##### 6. `states/states.py` — FSM States
-- `AdminEdit` — 15 states (exact match with original L218-233)
-- `BroadcastWizard` — 7 states (exact match with original L235-242)
-- `CampaignWizard` — 11 states (exact match with original L244-255)
-
-#### Verification Results
-
-| Test | Result | Details |
-|------|--------|---------|
-| `from core.config import BOT_TOKEN, ADMIN_ID` | ✅ PASS | Values read correctly from .env |
-| `from core.logging_config import setup_logging, logger` | ✅ PASS | Logger configured |
-| `from core.bot import bot, dp` | ✅ PASS | Bot and Dispatcher instances created |
-| `from core.database import init_db, get_db` | ✅ PASS | Functions importable |
-| `from states.states import AdminEdit, BroadcastWizard, CampaignWizard` | ✅ PASS | 15 + 7 + 11 = 33 states total |
-| All 9 package `__init__.py` imports | ✅ PASS | All packages importable |
-| `init_db()` against existing `bot.db` | ✅ PASS | 9 tables, 19 settings, 4 users, 27 groups preserved |
-
-**Total: 14/14 checks passed**
-
-#### What Was NOT Built (deferred to later phases)
-
-| Item | Deferred To |
-|------|-------------|
-| Model functions (get_setting, set_setting, etc.) | Phase 2 |
-| Service functions (trigger_group_promo, etc.) | Phase 3 |
-| Handler routers (cmd_start, admin panel, etc.) | Phase 4-5 |
-| Background tasks (auto_delete_broadcasts, etc.) | Phase 6 |
-| `main.py` entry point | Phase 6 |
-| New features (custom buttons, welcome media, etc.) | Phase 8 |
-
-#### Key Facts for Future Reference
-
-1. **Import path for bot/dp:** `from core.bot import bot, dp`
-2. **Import path for DB:** `from core.database import get_db, init_db`
-3. **Import path for config:** `from core.config import BOT_TOKEN, ADMIN_ID, BOT_USERNAME, DB_NAME`
-4. **Import path for logger:** `from core.logging_config import logger`
-5. **Import path for states:** `from states.states import AdminEdit, BroadcastWizard, CampaignWizard`
-6. **The old `bot.py` still exists** — it will be removed only after Phase 7 verification confirms the new code is complete.
-7. **Database file `bot.db` has real data** — 4 users, 27 groups, 19 settings. Never delete or reset it.
-8. **Branch:** All work is on `v2-redesign`. The `main` branch has the working old bot at `c5da191` (via `af995ed` revert commit).
+**Import paths:**
+- `from core.config import BOT_TOKEN, ADMIN_ID, BOT_USERNAME, DB_NAME`
+- `from core.bot import bot, dp`
+- `from core.database import get_db, init_db`
+- `from core.logging_config import logger`
+- `from states.states import AdminEdit, BroadcastWizard, CampaignWizard`
 
 ---
 
-### Phase 2 Report
-> *Pending*
+### Phase 2: Data Layer Report
+**Date:** 2026-10-26 | **Commit:** `c3e966f` | **Branch:** `v2-redesign`
 
-### Phase 3 Report
-> *Pending*
+Created 7 model files wrapping all database operations:
 
-### Phase 4 Report
-> *Pending*
+| Model | Functions | Source Lines |
+|-------|-----------|-------------|
+| `models/settings.py` | `get_setting()`, `set_setting()`, `get_many_settings()` | L196-205 |
+| `models/admins.py` | `is_admin()`, `add_admin()`, `remove_admin()`, `list_admins()` | L207-212, L1334-1362 |
+| `models/users.py` | `upsert_user()`, `get_all_user_ids()`, `get_total_users()`, `get_users_since()` | L437-440, L959, L1214-1229 |
+| `models/groups.py` | `upsert_group()`, `deactivate_group()`, `get_active_group_ids()`, `get_recent_groups()`, `get_group_counts()`, `get_last_promo_msg()`, `update_last_promo_msg()`, `get_user_active_groups()` | L337-389, L496-527, L1252-1284, L1510-1514 |
+| `models/events.py` | `log_event()`, `count_events()`, `count_events_since()` | L292-296, L1220-1225 |
+| `models/broadcasts.py` | `schedule_delete()`, `schedule_delete_after()`, `get_expired_messages()`, `remove_delete_record()`, `create_recurring_broadcast()`, `list_recurring_broadcasts()`, `get_active_recurring_broadcasts()`, `set_recurring_broadcast_active()`, `delete_recurring_broadcast()`, `update_recurring_broadcast_time()` | L397-399, L416-426, L2403-2580 |
+| `models/campaigns.py` | `get_campaign()`, `create_campaign()`, `update_campaign_status()`, `set_campaign_recurring()`, `update_campaign_last_broadcast()`, `list_campaigns()`, `get_active_recurring_campaigns()`, `get_user_progress()`, `ensure_user_progress()`, `update_user_progress()`, `get_verified_group_ids()`, `add_verified_group()`, `get_campaign_stats()` | L1374-1382, L1403-1557, L1891-1903, L2029-2048, L2078-2101, L2298-2310 |
 
-### Phase 5 Report
-> *Pending*
+**Improvement:** Added `get_many_settings()` for batch DB reads — used by `trigger_group_promo()` to fetch 12 settings in 1 query instead of 12 queries.
 
-### Phase 6 Report
-> *Pending*
+**Verified:** 7/7 model tests passed against real `bot.db` (4 users, 27 groups, 565 events confirmed).
 
-### Phase 7 Report
-> *Pending*
+---
 
-### Phase 8 Report
-> *Pending*
+### Phase 3: Services Report
+**Date:** 2026-10-26 | **Commit:** `6a50b00` | **Branch:** `v2-redesign`
 
-### Phase 9 Report
-> *Pending*
+Created 4 service modules:
 
-### Phase 10 Report
-> *Pending*
+| Service | Functions | Purpose |
+|---------|-----------|---------|
+| `services/media.py` | `send_media_message()` | Unified photo/video/text/VIP sender — replaces 8+ duplicates |
+| `services/promo.py` | `build_promo_keyboard()`, `get_start_message_data()`, `trigger_group_promo()` | Group promo logic with cooldown, auto-delete, VIP |
+| `services/broadcast.py` | `execute_broadcast()`, `execute_recurring_broadcast_cycle()` | Broadcast execution with flood protection |
+| `services/campaign.py` | `show_campaign_progress()`, `verify_campaign_groups()`, `deliver_unlock_content()`, `execute_campaign_broadcast()`, `execute_recurring_campaign_cycle()` | Full campaign lifecycle |
+
+**Verified:** 4/4 service imports passed.
+
+---
+
+### Phase 4-6: Handlers + Tasks + Main Report
+**Date:** 2026-10-26 | **Commit:** `4ee2097` | **Branch:** `v2-redesign`
+
+Created 16 files: 13 handler routers + 1 background tasks + 1 main entry point + 1 handler registry.
+
+#### Handler Routers (13)
+
+| Router | File | Handlers |
+|--------|------|----------|
+| `start` | `handlers/start.py` | `cmd_start`, `cb_start_btn2_click`, `cb_start_back` |
+| `payments` | `handlers/payments.py` | `process_pre_checkout_query`, `process_successful_payment` |
+| `groups` | `handlers/groups.py` | `bot_added_to_group`, `bot_removed_from_group`, `new_chat_member_handler` |
+| `campaigns_user` | `handlers/campaigns/user.py` | `cb_camp_verify`, `cb_camp_unlock` |
+| `admin_panel` | `handlers/admin/panel.py` | `cmd_admin`, `cb_admin_main`, `cb_admin_toggle_promo` |
+| `admin_promo` | `handlers/admin/promo_settings.py` | 14 handlers (settings menu, VIP, stars, post-payment, bot btn, preview, text, media, url, button) |
+| `admin_general` | `handlers/admin/general_settings.py` | 11 handlers (settings page, welcome toggle, auto-delete, cooldown, promo del, test group) |
+| `admin_welcome` | `handlers/admin/welcome_settings.py` | 10 handlers (start settings, preview, edit msg, btn2 name/url/text) |
+| `admin_broadcast` | `handlers/admin/broadcast.py` | 9 handlers (wizard: menu, target, text, media, VIP, stars, duration, confirm, execute) |
+| `admin_recurring` | `handlers/admin/recurring.py` | 8 handlers (list, start/stop/delete, create, target, text, hours) |
+| `admin_stats` | `handlers/admin/stats.py` | 2 handlers (stats, groups list) |
+| `admin_admins` | `handlers/admin/admins.py` | 4 handlers (manage menu, add, remove, process ID) |
+| `admin_campaigns` | `handlers/admin/campaigns.py` | 22 handlers (menu, 10-step wizard, confirm, list, view, pause/resume/delete, publish, test self, test group, recurring start/stop) |
+
+#### Background Tasks
+- `auto_delete_broadcasts()` — every 60s
+- `auto_recurring_campaigns()` — every 300s
+- `auto_recurring_broadcasts()` — every 300s
+
+#### Entry Point (`main.py`)
+- `validate_config()` → `setup_logging()` → `init_db()` → `register_all_routers()` → background tasks → self-healing polling loop
+- Global error handler registered on `dp`
+
+#### Verification Results
+**31/31 module imports passed ✅**
+- 4 core modules
+- 1 states module
+- 7 model modules
+- 4 service modules
+- 13 handler modules (+ 1 registry)
+- 1 background tasks module
+
+`main.py` syntax check passed ✅
+
+---
+
+### What Was NOT Done Yet (Phase 8 — New Features)
+
+| Feature | Status | Planned In |
+|---------|--------|-----------|
+| Custom buttons management system (promo/welcome/campaign) | 🔲 | Phase 8A |
+| Welcome message media support | 🔲 | Phase 8B |
+| Campaign preview from admin view | 🔲 | Phase 8C |
+| Enhanced back/cancel navigation | 🔲 | Phase 8D |
+
+---
+
+## File Inventory (v2-redesign branch)
+
+### New files created (31 total):
+```
+main.py                              — Entry point (replaces bot.py)
+core/__init__.py                     — Package init
+core/config.py                       — Environment config
+core/logging_config.py               — Logging setup
+core/bot.py                          — Bot + Dispatcher singletons
+core/database.py                     — DB init, migrations, get_db()
+states/__init__.py                   — Package init
+states/states.py                     — FSM state definitions
+models/__init__.py                   — Package init
+models/settings.py                   — Settings CRUD
+models/admins.py                     — Admin check & CRUD
+models/users.py                      — Users CRUD
+models/groups.py                     — Groups CRUD
+models/events.py                     — Event logging
+models/broadcasts.py                 — Broadcast queue + recurring CRUD
+models/campaigns.py                  — Campaign + progress + groups CRUD
+services/__init__.py                 — Package init
+services/media.py                    — Unified message sender
+services/promo.py                    — Promo logic
+services/broadcast.py                — Broadcast execution
+services/campaign.py                 — Campaign lifecycle
+handlers/__init__.py                 — Router registration hub
+handlers/start.py                    — /start handler
+handlers/payments.py                 — Payment handlers
+handlers/groups.py                   — Group event handlers
+handlers/campaigns/__init__.py       — Package init
+handlers/campaigns/user.py           — Campaign user handlers
+handlers/admin/__init__.py           — Package init
+handlers/admin/panel.py              — Admin panel
+handlers/admin/promo_settings.py     — Promo settings
+handlers/admin/general_settings.py   — General settings
+handlers/admin/welcome_settings.py   — Welcome settings
+handlers/admin/broadcast.py          — Broadcast wizard
+handlers/admin/recurring.py          — Recurring broadcasts
+handlers/admin/stats.py              — Stats + groups list
+handlers/admin/admins.py             — Admin management
+handlers/admin/campaigns.py          — Campaign management
+tasks/__init__.py                    — Package init
+tasks/background.py                  — Background tasks
+utils/__init__.py                    — Package init (empty, for future use)
+```
+
+### Old files (still present, untouched):
+```
+bot.py                               — Original 2627-line file (kept as reference until Phase 9)
+bot.db                               — SQLite database (production data)
+.env                                 — Secrets
+.env.example                         — Template
+requirements.txt                     — Dependencies (unchanged)
+README.md                            — Documentation (to update in Phase 10)
+```
+
+---
+
+## Git History (v2-redesign)
+
+```
+4ee2097  phase4-6: handlers (core + admin), background tasks, main.py entry point
+6a50b00  phase3: services - media, promo, broadcast, campaign business logic
+c3e966f  phase2: data layer - settings, admins, users, groups, events, broadcasts, campaigns models
+0d2aa4c  phase1: infrastructure - config, database, bot singleton, logging, FSM states
+427de92  docs: add project vision, architecture design, execution plan, progress tracker
+af995ed  revert: restore bot.py to c5da191 (undo 30139dd changes)
+```
 
 ---
 
@@ -169,14 +208,16 @@ utils/          → Shared utilities (empty, ready for Phase 3)
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
-| 2026-10-18 | Keep `aiosqlite` without ORM | Project simplicity, no need for SQLAlchemy overhead |
-| 2026-10-18 | Keep `MemoryStorage` for FSM | Only admins use wizards; restart clears in-progress wizards which is acceptable |
-| 2026-10-18 | Use aiogram `Router()` for modular handlers | Native aiogram 3.x pattern, avoids circular imports with `dp` |
-| 2026-10-18 | Create `custom_buttons` DB table instead of JSON in settings | Proper CRUD, toggle, ordering; JSON blob doesn't support individual button management |
-| 2026-10-18 | Separate `services/media.py` for unified message sending | Eliminates 8+ copies of photo/video/text branching throughout the codebase |
-| 2026-10-18 | Keep `callback_data` patterns unchanged | Existing users may have open inline keyboards with old data |
-| 2026-10-19 | `get_db()` as context manager (not singleton connection) | Matches aiosqlite best practice; each operation gets fresh connection, auto-closed |
-| 2026-10-19 | Keep old `bot.py` until Phase 7 | Safety net — can compare behavior, and `main` branch still works from it |
+| 2026-10-18 | Keep `aiosqlite` without ORM | Project simplicity |
+| 2026-10-18 | Keep `MemoryStorage` for FSM | Admin-only wizards, restart loss acceptable |
+| 2026-10-18 | Use aiogram `Router()` for modular handlers | Native aiogram 3.x pattern |
+| 2026-10-18 | Create `custom_buttons` DB table (Phase 8) | Proper CRUD vs JSON blob |
+| 2026-10-18 | Separate `services/media.py` | Eliminates 8+ code duplicates |
+| 2026-10-18 | Keep `callback_data` patterns unchanged | Backward compatibility |
+| 2026-10-19 | `get_db()` as context manager | Each operation gets fresh connection |
+| 2026-10-19 | Keep old `bot.py` until Phase 9 | Safety net for comparison |
+| 2026-10-26 | Add `get_many_settings()` batch reader | `trigger_group_promo` reads 12 settings in 1 query |
+| 2026-10-26 | Commit Phases 4-6 together | All handler files are interdependent through `handlers/__init__.py` |
 
 ---
 
@@ -184,4 +225,4 @@ utils/          → Shared utilities (empty, ready for Phase 3)
 
 | # | Issue | Status | Resolution |
 |---|-------|--------|------------|
-| — | *None yet* | — | — |
+| — | *None* | — | — |
