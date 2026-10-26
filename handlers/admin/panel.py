@@ -62,3 +62,24 @@ async def cb_admin_toggle_promo(callback: types.CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=get_admin_keyboard(new_val, callback.from_user.id))
     status_text = "تم تشغيل الترويج" if new_val == "true" else "تم إيقاف الترويج"
     await callback.answer(status_text)
+
+
+# ── Global Cancel Handlers ───────────────────────────────────────────────────
+
+@router.callback_query(F.data == "cancel_wizard")
+async def cb_cancel_wizard(callback: types.CallbackQuery, state: FSMContext):
+    """Universal cancel button for all wizards — clears state and confirms."""
+    await state.clear()
+    await callback.message.answer("❌ تم الإلغاء.")
+    await callback.answer()
+
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: types.Message, state: FSMContext):
+    """Universal /cancel command — clears any active FSM state."""
+    current_state = await state.get_state()
+    if current_state:
+        await state.clear()
+        await message.answer("❌ تم إلغاء العملية الحالية.")
+    else:
+        await message.answer("لا توجد عملية جارية للإلغاء.")
