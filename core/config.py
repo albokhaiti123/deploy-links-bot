@@ -17,6 +17,10 @@ BOT_USERNAME: str = os.getenv("BOT_USERNAME", "")
 # --- Database ---
 DB_NAME: str = os.getenv("DB_NAME", "bot.db")
 
+# --- Timezone for daily quota calculation ---
+QUOTA_TIMEZONE: str = os.getenv("QUOTA_TIMEZONE", "UTC")
+
+
 # --- Validation ---
 def validate_config() -> None:
     """Check that all required config values are present. Called once at startup."""

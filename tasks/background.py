@@ -85,3 +85,36 @@ async def auto_recurring_broadcasts() -> None:
                         logger.error(f"Recurring broadcast {rb_id} error: {e}")
         except Exception as e:
             logger.error(f"Error in auto_recurring_broadcasts: {e}")
+
+
+async def auto_user_recurring_campaigns() -> None:
+    """Background task: execute user recurring campaigns with fencing."""
+    import asyncio as _asyncio
+    from models.user_campaigns import get_due_recurring_campaigns
+    from models.settings import get_setting as _get_setting
+    from services.user_broadcast import execute_user_campaign
+
+    _running: set[int] = set()
+
+    async def _run_safe(cid: int) -> None:
+        try:
+            await execute_user_campaign(cid)
+        finally:
+            _running.discard(cid)
+
+    while True:
+        try:
+            await _asyncio.sleep(300)
+            # Check global feature switch first
+            if await _get_setting("user_campaigns_enabled") != "true":
+                continue
+            campaigns = await get_due_recurring_campaigns()
+            for c in campaigns:
+                cid = c["id"]
+                if cid in _running:
+                    continue
+                _running.add(cid)
+                _asyncio.create_task(_run_safe(cid))
+        except Exception as e:
+            logger.error(f"Error in auto_user_recurring_campaigns: {e}")
+

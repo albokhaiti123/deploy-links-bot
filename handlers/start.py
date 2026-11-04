@@ -48,6 +48,16 @@ async def cmd_start(message: types.Message):
     text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
     media_id = await get_setting("start_media_id")
     media_type = await get_setting("start_media_type")
+
+    # For non-admin users, add a user dashboard button to the keyboard
+    from models.admins import is_admin as _is_admin
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    if not await _is_admin(message.from_user.id):
+        # Append user dashboard button to existing keyboard
+        existing_rows = kb.inline_keyboard if kb else []
+        user_btn = [[InlineKeyboardButton(text="👤 My Dashboard", callback_data="user_menu")]]
+        kb = InlineKeyboardMarkup(inline_keyboard=existing_rows + user_btn)
+
     try:
         if media_id and media_type == "photo":
             await message.answer_photo(photo=media_id, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -63,6 +73,7 @@ async def cmd_start(message: types.Message):
             await message.answer_video(video=media_id, caption=text, reply_markup=kb)
         else:
             await message.answer(text, reply_markup=kb)
+
 
 
 @router.callback_query(F.data == "start_btn2_click")

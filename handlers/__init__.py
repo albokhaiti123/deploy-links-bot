@@ -18,6 +18,9 @@ from handlers.admin.stats import router as admin_stats_router
 from handlers.admin.admins import router as admin_admins_router
 from handlers.admin.campaigns import router as admin_campaigns_router
 from handlers.admin.button_manager import router as admin_button_manager_router
+from handlers.admin.user_management import router as admin_user_mgmt_router
+from handlers.user.my_groups import router as user_groups_router
+from handlers.user.my_campaign import router as user_campaign_router
 
 
 def register_all_routers(dp: Dispatcher) -> None:
@@ -28,6 +31,9 @@ def register_all_routers(dp: Dispatcher) -> None:
         payments_router,
         groups_router,
         campaigns_user_router,
+        # User feature handlers
+        user_groups_router,
+        user_campaign_router,
         # Admin handlers
         admin_panel_router,
         admin_promo_router,
@@ -39,4 +45,6 @@ def register_all_routers(dp: Dispatcher) -> None:
         admin_admins_router,
         admin_campaigns_router,
         admin_button_manager_router,
+        admin_user_mgmt_router,
     )
+

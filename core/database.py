@@ -67,7 +67,11 @@ _DEFAULT_SETTINGS = {
     "test_group_chat_id": "",
     "start_media_id": "",
     "start_media_type": "",
+    # ── User campaigns feature switch ────────────────────────────
+    "user_campaigns_enabled": "true",
+    "user_campaigns_generation": "1",
 }
+
 
 
 async def _try_add_column(db, table: str, column: str, coldef: str) -> None:
@@ -97,6 +101,12 @@ async def init_db() -> None:
         """)
         await _try_add_column(db, "groups", "last_promo_msg_id", "INTEGER")
         await _try_add_column(db, "groups", "added_by", "INTEGER")
+        # ── Group health & reward ownership (new) ────────────────
+        await _try_add_column(db, "groups", "reward_owner_id", "INTEGER")
+        await _try_add_column(db, "groups", "health_status", "TEXT DEFAULT 'unknown'")
+        await _try_add_column(db, "groups", "last_error", "TEXT")
+        await _try_add_column(db, "groups", "fail_count", "INTEGER DEFAULT 0")
+        await _try_add_column(db, "groups", "last_checked_at", "TIMESTAMP")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -223,6 +233,76 @@ async def init_db() -> None:
             )
         """)
 
+        # ── User campaigns (new) ─────────────────────────────────
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_campaigns (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_user_id       INTEGER NOT NULL,
+                text                TEXT,
+                photo_file_id       TEXT,
+                buttons_json        TEXT,
+                auto_delete_seconds INTEGER DEFAULT 0,
+                target_groups_json  TEXT NOT NULL DEFAULT '[]',
+                mode                TEXT DEFAULT 'immediate',
+                repeat_hours        INTEGER DEFAULT 0,
+                status              TEXT DEFAULT 'draft',
+                system_generation   INTEGER DEFAULT 1,
+                run_id              TEXT,
+                created_at          TIMESTAMP NOT NULL,
+                activated_at        TIMESTAMP,
+                last_run_at         TIMESTAMP,
+                next_run_at         TIMESTAMP,
+                completed_at        TIMESTAMP,
+                quota_date          TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(owner_user_id) REFERENCES users(telegram_id)
+            )
+        """)
+        # Partial unique index: one "current" campaign per user
+        await db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_one_current_per_user
+            ON user_campaigns(owner_user_id)
+            WHERE status IN ('active', 'running', 'paused', 'suspended_admin')
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_campaign_quota (
+                user_id         INTEGER NOT NULL,
+                quota_date      TEXT NOT NULL,
+                campaigns_created INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, quota_date)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_campaign_deliveries (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id     INTEGER NOT NULL,
+                run_id          TEXT NOT NULL,
+                chat_id         INTEGER NOT NULL,
+                status          TEXT,
+                error_code      TEXT,
+                attempted_at    TIMESTAMP NOT NULL,
+                confirmed_at    TIMESTAMP,
+                UNIQUE(campaign_id, run_id, chat_id),
+                FOREIGN KEY(campaign_id) REFERENCES user_campaigns(id)
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_deliveries_campaign_run
+            ON user_campaign_deliveries(campaign_id, run_id)
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_campaign_execution_claims (
+                campaign_id     INTEGER PRIMARY KEY,
+                run_id          TEXT NOT NULL,
+                claimed_at      TIMESTAMP NOT NULL,
+                heartbeat_at    TIMESTAMP NOT NULL,
+                expires_at      TIMESTAMP NOT NULL,
+                FOREIGN KEY(campaign_id) REFERENCES user_campaigns(id)
+            )
+        """)
+
         # ── Default settings ─────────────────────────────────────
         for key, value in _DEFAULT_SETTINGS.items():
             await db.execute(
@@ -233,3 +313,4 @@ async def init_db() -> None:
         await db.commit()
 
     logger.info("Database initialized successfully.")
+

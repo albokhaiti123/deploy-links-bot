@@ -4,3 +4,7 @@ __pycache__/
 *.sqlite3
 bot.db
 bot.log
+*.db
+venv/
+.venv/
+

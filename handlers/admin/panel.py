@@ -15,7 +15,8 @@ from models.settings import get_setting, set_setting
 router = Router(name="admin_panel")
 
 
-def get_admin_keyboard(promo_enabled: str, user_id: int) -> InlineKeyboardMarkup:
+def get_admin_keyboard(promo_enabled: str, user_id: int,
+                        user_campaigns_enabled: str = "true") -> InlineKeyboardMarkup:
     toggle_text = "⏸️ إيقاف الترويج" if promo_enabled == "true" else "▶️ تشغيل الترويج"
     keyboard = [
         [InlineKeyboardButton(text="📢 إعداد الترويج", callback_data="admin_promo_settings")],
@@ -28,7 +29,13 @@ def get_admin_keyboard(promo_enabled: str, user_id: int) -> InlineKeyboardMarkup
     ]
     if user_id == ADMIN_ID:
         keyboard.insert(4, [InlineKeyboardButton(text="👑 إدارة المشرفين", callback_data="admin_manage_admins")])
+        # Owner-only: user campaigns control
+        uc_icon = "🟢" if user_campaigns_enabled == "true" else "🔴"
+        uc_label = f"{uc_icon} حملات المستخدمين: {'مفعّلة' if user_campaigns_enabled == 'true' else 'معطّلة'}"
+        keyboard.append([InlineKeyboardButton(text=uc_label, callback_data="admin_toggle_user_campaigns")])
+        keyboard.append([InlineKeyboardButton(text="🌐 جميع المجموعات", callback_data="admin_all_groups")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 
 
 @router.message(Command("admin"))
@@ -37,8 +44,13 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         return
     await state.clear()
     promo_enabled = await get_setting("promo_enabled")
+    uc_enabled = await get_setting("user_campaigns_enabled")
     text = "━━━━━━━━━━━━━━\n⚙️ <b>لوحة التحكم</b>\n━━━━━━━━━━━━━━"
-    await message.answer(text, reply_markup=get_admin_keyboard(promo_enabled, message.from_user.id), parse_mode=ParseMode.HTML)
+    await message.answer(
+        text,
+        reply_markup=get_admin_keyboard(promo_enabled, message.from_user.id, uc_enabled),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 @router.callback_query(F.data == "admin_main")
@@ -47,9 +59,15 @@ async def cb_admin_main(callback: types.CallbackQuery, state: FSMContext):
         return
     await state.clear()
     promo_enabled = await get_setting("promo_enabled")
+    uc_enabled = await get_setting("user_campaigns_enabled")
     text = "━━━━━━━━━━━━━━\n⚙️ <b>لوحة التحكم</b>\n━━━━━━━━━━━━━━"
-    await callback.message.edit_text(text, reply_markup=get_admin_keyboard(promo_enabled, callback.from_user.id), parse_mode=ParseMode.HTML)
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_keyboard(promo_enabled, callback.from_user.id, uc_enabled),
+        parse_mode=ParseMode.HTML,
+    )
     await callback.answer()
+
 
 
 @router.callback_query(F.data == "admin_toggle_promo")

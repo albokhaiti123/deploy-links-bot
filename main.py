@@ -18,7 +18,10 @@ from tasks.background import (
     auto_delete_broadcasts,
     auto_recurring_campaigns,
     auto_recurring_broadcasts,
+    auto_user_recurring_campaigns,
 )
+from models.user_campaigns import recover_stale_claims
+
 
 
 # ── Global Error Handler ────────────────────────────────────────────────────
@@ -74,15 +77,22 @@ async def main():
     await init_db()
     logger.info("Database initialized.")
 
+    # 3b. Recover stale execution claims from previous run
+    await recover_stale_claims()
+    logger.info("Stale campaign claims recovered.")
+
     # 4. Register all handlers
     register_all_routers(dp)
     logger.info("All routers registered.")
+
 
     # 5. Start background tasks
     asyncio.create_task(auto_delete_broadcasts())
     asyncio.create_task(auto_recurring_campaigns())
     asyncio.create_task(auto_recurring_broadcasts())
+    asyncio.create_task(auto_user_recurring_campaigns())
     logger.info("Background tasks started.")
+
 
     # 6. Self-healing polling loop
     while True:
