@@ -252,8 +252,8 @@ async def execute_campaign_broadcast(
         except TelegramForbiddenError:
             if target in ("groups", "all"):
                 await deactivate_group(chat_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Campaign {campaign_id} broadcast failed for {chat_id}: {e}")
         await asyncio.sleep(0.05)
 
     await status_msg.edit_text(
@@ -287,8 +287,8 @@ async def execute_recurring_campaign_cycle(campaign_id: int) -> None:
                 media_type=campaign.get("media_type"),
                 keyboard=kb,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Recurring campaign {campaign_id} failed for {chat_id}: {e}")
         await asyncio.sleep(0.05)
 
     await update_campaign_last_broadcast(campaign_id)

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from aiogram import types
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from core.bot import bot
 from core.logging_config import logger
@@ -51,8 +51,10 @@ async def execute_broadcast(data: dict, status_msg: types.Message) -> None:
         except TelegramForbiddenError:
             if target != "users":
                 await deactivate_group(chat_id)
-        except Exception:
-            pass
+        except TelegramBadRequest as e:
+            logger.warning(f"Broadcast BadRequest for {chat_id}: {e}")
+        except Exception as e:
+            logger.warning(f"Broadcast failed for {chat_id}: {e}")
 
         await asyncio.sleep(0.05)  # Flood protection
 
@@ -86,8 +88,8 @@ async def execute_recurring_broadcast_cycle(
                 is_vip=is_vip,
                 stars=stars,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Recurring broadcast {rb_id} failed for {chat_id}: {e}")
         await asyncio.sleep(0.05)
 
     await update_recurring_broadcast_time(rb_id)

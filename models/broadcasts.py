@@ -115,3 +115,32 @@ async def update_recurring_broadcast_time(rb_id: int) -> None:
             (datetime.now(), rb_id),
         )
         await db.commit()
+
+
+async def get_recurring_broadcast(rb_id: int) -> dict | None:
+    """Get a single recurring broadcast by ID."""
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT id, target, text, media_id, media_type, is_vip, stars, repeat_hours, is_active, last_broadcast_at "
+            "FROM recurring_broadcasts WHERE id=?",
+            (rb_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0], "target": row[1], "text": row[2],
+        "media_id": row[3], "media_type": row[4],
+        "is_vip": row[5], "stars": row[6],
+        "repeat_hours": row[7], "is_active": row[8],
+        "last_broadcast_at": row[9],
+    }
+
+
+async def update_recurring_broadcast_text(rb_id: int, text: str) -> None:
+    """Update the text of a recurring broadcast."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE recurring_broadcasts SET text=? WHERE id=?", (text, rb_id)
+        )
+        await db.commit()

@@ -11,6 +11,7 @@ import time
 from datetime import timedelta, datetime
 
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from core.bot import bot
@@ -173,5 +174,7 @@ async def trigger_group_promo(message, target_user) -> None:
     except TelegramForbiddenError:
         logger.warning(f"Forbidden to send message in {chat_id}. Marking inactive.")
         await deactivate_group(chat_id)
+    except TelegramBadRequest as e:
+        logger.warning(f"BadRequest in promo for {chat_id}: {e}")
     except TelegramAPIError as e:
         logger.error(f"Failed to send promo in {chat_id}: {e}")

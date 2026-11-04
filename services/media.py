@@ -7,11 +7,14 @@ Every module that needs to send a message with optional media calls this.
 
 from aiogram import Bot, types
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     InlineKeyboardMarkup,
     InputPaidMediaPhoto,
     InputPaidMediaVideo,
 )
+
+from core.logging_config import logger
 
 
 async def send_media_message(
@@ -75,20 +78,42 @@ async def send_media_message(
             return text_msg
 
     # ── Normal (free content) ──
-    if media_id and media_type == "photo":
-        return await bot.send_photo(
-            chat_id, photo=media_id, caption=text,
-            reply_markup=keyboard, parse_mode=parse_mode,
-        )
-    elif media_id and media_type == "video":
-        return await bot.send_video(
-            chat_id, video=media_id, caption=text,
-            reply_markup=keyboard, parse_mode=parse_mode,
-        )
-    else:
-        return await bot.send_message(
-            chat_id, text,
-            reply_markup=keyboard,
-            parse_mode=parse_mode,
-            link_preview_options=types.LinkPreviewOptions(is_disabled=True),
-        )
+    try:
+        if media_id and media_type == "photo":
+            return await bot.send_photo(
+                chat_id, photo=media_id, caption=text,
+                reply_markup=keyboard, parse_mode=parse_mode,
+            )
+        elif media_id and media_type == "video":
+            return await bot.send_video(
+                chat_id, video=media_id, caption=text,
+                reply_markup=keyboard, parse_mode=parse_mode,
+            )
+        else:
+            return await bot.send_message(
+                chat_id, text,
+                reply_markup=keyboard,
+                parse_mode=parse_mode,
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True),
+            )
+    except TelegramBadRequest as e:
+        if "can't parse entities" in str(e).lower():
+            logger.warning(f"HTML parse error in chat {chat_id}, retrying without formatting: {e}")
+            # Retry without parse_mode
+            if media_id and media_type == "photo":
+                return await bot.send_photo(
+                    chat_id, photo=media_id, caption=text,
+                    reply_markup=keyboard,
+                )
+            elif media_id and media_type == "video":
+                return await bot.send_video(
+                    chat_id, video=media_id, caption=text,
+                    reply_markup=keyboard,
+                )
+            else:
+                return await bot.send_message(
+                    chat_id, text,
+                    reply_markup=keyboard,
+                    link_preview_options=types.LinkPreviewOptions(is_disabled=True),
+                )
+        raise  # Re-raise non-HTML errors
