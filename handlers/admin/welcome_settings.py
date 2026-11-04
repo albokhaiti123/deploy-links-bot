@@ -50,12 +50,15 @@ async def cb_admin_preview_start(callback: types.CallbackQuery):
     media_id = await get_setting("start_media_id")
     media_type = await get_setting("start_media_type")
     preview_text = f"👁 <b>معاينة الترحيب:</b>\n\n{text}"
-    if media_id and media_type == "photo":
-        await callback.message.answer_photo(photo=media_id, caption=preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    elif media_id and media_type == "video":
-        await callback.message.answer_video(video=media_id, caption=preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    else:
-        await callback.message.answer(preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    try:
+        if media_id and media_type == "photo":
+            await callback.message.answer_photo(photo=media_id, caption=preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        elif media_id and media_type == "video":
+            await callback.message.answer_video(video=media_id, caption=preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await callback.message.answer(preview_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        await callback.message.answer(preview_text, reply_markup=kb)
     await callback.answer()
 
 

@@ -24,7 +24,42 @@ from tasks.background import (
 # ── Global Error Handler ────────────────────────────────────────────────────
 @dp.errors()
 async def global_error_handler(event: types.ErrorEvent) -> bool:
-    logger.warning(f"Caught unhandled error: {event.exception.__class__.__name__}: {event.exception}")
+    exc = event.exception
+    exc_msg = str(exc).lower()
+
+    # ── HTML parse error fallback ──
+    if "can't parse entities" in exc_msg:
+        logger.warning(f"HTML parse error intercepted: {exc}")
+        try:
+            update = event.update
+            # Try to answer the callback to prevent "query too old"
+            if update.callback_query:
+                try:
+                    await update.callback_query.answer(
+                        "⚠️ خطأ في تنسيق النص، يرجى مراجعة الإعدادات.", show_alert=True
+                    )
+                except Exception:
+                    pass
+            # Try to notify the user/admin in chat
+            chat_id = None
+            if update.message:
+                chat_id = update.message.chat.id
+            elif update.callback_query and update.callback_query.message:
+                chat_id = update.callback_query.message.chat.id
+            if chat_id:
+                await bot.send_message(
+                    chat_id,
+                    "⚠️ حدث خطأ في تنسيق HTML بالنص. يرجى مراجعة النصوص في الإعدادات والتأكد من إغلاق جميع الوسوم مثل <b>...</b>",
+                )
+        except Exception as inner:
+            logger.warning(f"Failed to send HTML error fallback: {inner}")
+        return True
+
+    # ── Query too old — suppress silently ──
+    if "query is too old" in exc_msg or "query id is invalid" in exc_msg:
+        return True
+
+    logger.warning(f"Caught unhandled error: {exc.__class__.__name__}: {exc}")
     return True
 
 

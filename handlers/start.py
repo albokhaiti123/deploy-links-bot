@@ -48,12 +48,21 @@ async def cmd_start(message: types.Message):
     text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
     media_id = await get_setting("start_media_id")
     media_type = await get_setting("start_media_type")
-    if media_id and media_type == "photo":
-        await message.answer_photo(photo=media_id, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    elif media_id and media_type == "video":
-        await message.answer_video(video=media_id, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    else:
-        await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    try:
+        if media_id and media_type == "photo":
+            await message.answer_photo(photo=media_id, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        elif media_id and media_type == "video":
+            await message.answer_video(video=media_id, caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        # Fallback: send without HTML parsing if admin text has broken tags
+        if media_id and media_type == "photo":
+            await message.answer_photo(photo=media_id, caption=text, reply_markup=kb)
+        elif media_id and media_type == "video":
+            await message.answer_video(video=media_id, caption=text, reply_markup=kb)
+        else:
+            await message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data == "start_btn2_click")
