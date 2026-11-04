@@ -43,28 +43,36 @@ async def cb_admin_recurring_bw(callback: types.CallbackQuery, state: FSMContext
             preview = (rb_text[:30] + "...") if rb_text and len(rb_text) > 30 else (rb_text or "")
             text += f"{status_icon} #{rb_id} | {target_map.get(target, target)} | كل {repeat_hours}h | {preview}\n"
     buttons = []
-    for row in rows:
-        rb_id, _, _, is_active, _ = row
-        row1 = []
-        if is_active:
-            row1.append(InlineKeyboardButton(text=f"⏸ إيقاف #{rb_id}", callback_data=f"rbw_stop_{rb_id}"))
-        else:
-            row1.append(InlineKeyboardButton(text=f"▶️ تشغيل #{rb_id}", callback_data=f"rbw_start_{rb_id}"))
-        row1.append(InlineKeyboardButton(text=f"🗑 حذف #{rb_id}", callback_data=f"rbw_del_{rb_id}"))
-        buttons.append(row1)
-        buttons.append([
-            InlineKeyboardButton(text=f"📝 تعديل #{rb_id}", callback_data=f"rbw_edit_{rb_id}"),
-            InlineKeyboardButton(text=f"👁 معاينة #{rb_id}", callback_data=f"rbw_preview_{rb_id}"),
-            InlineKeyboardButton(text=f"📢 نشر #{rb_id}", callback_data=f"rbw_send_{rb_id}"),
-        ])
+    if rows:
+        for row in rows:
+            rb_id, _, _, is_active, _ = row
+            row1 = []
+            if is_active:
+                row1.append(InlineKeyboardButton(text=f"⏸ إيقاف #{rb_id}", callback_data=f"rbw_stop_{rb_id}"))
+            else:
+                row1.append(InlineKeyboardButton(text=f"▶️ تشغيل #{rb_id}", callback_data=f"rbw_start_{rb_id}"))
+            row1.append(InlineKeyboardButton(text=f"🗑 حذف #{rb_id}", callback_data=f"rbw_del_{rb_id}"))
+            buttons.append(row1)
+            buttons.append([
+                InlineKeyboardButton(text=f"📝 تعديل #{rb_id}", callback_data=f"rbw_edit_{rb_id}"),
+                InlineKeyboardButton(text=f"👁 معاينة #{rb_id}", callback_data=f"rbw_preview_{rb_id}"),
+                InlineKeyboardButton(text=f"📢 نشر #{rb_id}", callback_data=f"rbw_send_{rb_id}"),
+            ])
     buttons.append([InlineKeyboardButton(text="➕ إنشاء إذاعة دورية", callback_data="rbw_create")])
     buttons.append([InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_broadcast_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     except Exception:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception:
+        pass
 
 
 # ── Start / Stop / Delete ────────────────────────────────────────────────────
@@ -75,7 +83,10 @@ async def cb_rbw_stop(callback: types.CallbackQuery):
         return
     rb_id = int(callback.data.split("_")[-1])
     await set_recurring_broadcast_active(rb_id, False)
-    await callback.answer("⏸ تم الإيقاف.", show_alert=True)
+    try:
+        await callback.answer("⏸ تم الإيقاف.", show_alert=True)
+    except Exception:
+        pass
     await cb_admin_recurring_bw(callback)
 
 
@@ -85,7 +96,10 @@ async def cb_rbw_start(callback: types.CallbackQuery):
         return
     rb_id = int(callback.data.split("_")[-1])
     await set_recurring_broadcast_active(rb_id, True)
-    await callback.answer("▶️ تم التشغيل.", show_alert=True)
+    try:
+        await callback.answer("▶️ تم التشغيل.", show_alert=True)
+    except Exception:
+        pass
     await cb_admin_recurring_bw(callback)
 
 
@@ -95,7 +109,10 @@ async def cb_rbw_del(callback: types.CallbackQuery):
         return
     rb_id = int(callback.data.split("_")[-1])
     await delete_recurring_broadcast(rb_id)
-    await callback.answer("🗑 تم الحذف.", show_alert=True)
+    try:
+        await callback.answer("🗑 تم الحذف.", show_alert=True)
+    except Exception:
+        pass
     await cb_admin_recurring_bw(callback)
 
 

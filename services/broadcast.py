@@ -52,7 +52,14 @@ async def execute_broadcast(data: dict, status_msg: types.Message) -> None:
             if target != "users":
                 await deactivate_group(chat_id)
         except TelegramBadRequest as e:
-            logger.warning(f"Broadcast BadRequest for {chat_id}: {e}")
+            err = str(e).lower()
+            if "upgraded to a supergroup" in err:
+                logger.info(f"Broadcast: group {chat_id} upgraded to supergroup, deactivating.")
+                await deactivate_group(chat_id)
+            elif "not enough rights" in err:
+                logger.info(f"Broadcast: no send rights in {chat_id}, skipping.")
+            else:
+                logger.warning(f"Broadcast BadRequest for {chat_id}: {e}")
         except Exception as e:
             logger.warning(f"Broadcast failed for {chat_id}: {e}")
 
@@ -88,6 +95,14 @@ async def execute_recurring_broadcast_cycle(
                 is_vip=is_vip,
                 stars=stars,
             )
+        except TelegramForbiddenError:
+            await deactivate_group(chat_id)
+        except TelegramBadRequest as e:
+            err = str(e).lower()
+            if "upgraded to a supergroup" in err:
+                await deactivate_group(chat_id)
+            elif "not enough rights" not in err:
+                logger.warning(f"Recurring broadcast {rb_id} BadRequest for {chat_id}: {e}")
         except Exception as e:
             logger.warning(f"Recurring broadcast {rb_id} failed for {chat_id}: {e}")
         await asyncio.sleep(0.05)

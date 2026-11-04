@@ -13,7 +13,7 @@ import time
 
 from aiogram import types
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from core.bot import bot
@@ -252,6 +252,12 @@ async def execute_campaign_broadcast(
         except TelegramForbiddenError:
             if target in ("groups", "all"):
                 await deactivate_group(chat_id)
+        except TelegramBadRequest as e:
+            err = str(e).lower()
+            if "upgraded to a supergroup" in err:
+                await deactivate_group(chat_id)
+            elif "not enough rights" not in err:
+                logger.warning(f"Campaign {campaign_id} BadRequest for {chat_id}: {e}")
         except Exception as e:
             logger.warning(f"Campaign {campaign_id} broadcast failed for {chat_id}: {e}")
         await asyncio.sleep(0.05)
@@ -287,6 +293,14 @@ async def execute_recurring_campaign_cycle(campaign_id: int) -> None:
                 media_type=campaign.get("media_type"),
                 keyboard=kb,
             )
+        except TelegramForbiddenError:
+            await deactivate_group(chat_id)
+        except TelegramBadRequest as e:
+            err = str(e).lower()
+            if "upgraded to a supergroup" in err:
+                await deactivate_group(chat_id)
+            elif "not enough rights" not in err:
+                logger.warning(f"Recurring campaign {campaign_id} BadRequest for {chat_id}: {e}")
         except Exception as e:
             logger.warning(f"Recurring campaign {campaign_id} failed for {chat_id}: {e}")
         await asyncio.sleep(0.05)

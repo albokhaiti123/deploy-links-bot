@@ -175,6 +175,13 @@ async def trigger_group_promo(message, target_user) -> None:
         logger.warning(f"Forbidden to send message in {chat_id}. Marking inactive.")
         await deactivate_group(chat_id)
     except TelegramBadRequest as e:
-        logger.warning(f"BadRequest in promo for {chat_id}: {e}")
+        err = str(e).lower()
+        if "upgraded to a supergroup" in err:
+            logger.info(f"Promo: group {chat_id} upgraded to supergroup, deactivating.")
+            await deactivate_group(chat_id)
+        elif "not enough rights" in err:
+            logger.info(f"Promo: no send rights in {chat_id}, skipping.")
+        else:
+            logger.warning(f"BadRequest in promo for {chat_id}: {e}")
     except TelegramAPIError as e:
         logger.error(f"Failed to send promo in {chat_id}: {e}")

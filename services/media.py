@@ -49,21 +49,43 @@ async def send_media_message(
                 media_payload = [InputPaidMediaPhoto(media=media_id)]
             else:
                 media_payload = [InputPaidMediaVideo(media=media_id)]
-            sent = await bot.send_paid_media(
-                chat_id=chat_id,
-                star_count=stars,
-                media=media_payload,
-                caption=text,
-                parse_mode=parse_mode,
-            )
+            try:
+                sent = await bot.send_paid_media(
+                    chat_id=chat_id,
+                    star_count=stars,
+                    media=media_payload,
+                    caption=text,
+                    parse_mode=parse_mode,
+                )
+            except TelegramBadRequest as e:
+                if "can't parse entities" in str(e).lower():
+                    logger.warning(f"HTML parse error in VIP media for {chat_id}, retrying without formatting")
+                    sent = await bot.send_paid_media(
+                        chat_id=chat_id,
+                        star_count=stars,
+                        media=media_payload,
+                        caption=text,
+                    )
+                else:
+                    raise
             return sent
         else:
             # Text-only VIP → send text first, then invoice reply
-            text_msg = await bot.send_message(
-                chat_id, text,
-                reply_markup=keyboard,
-                parse_mode=parse_mode,
-            )
+            try:
+                text_msg = await bot.send_message(
+                    chat_id, text,
+                    reply_markup=keyboard,
+                    parse_mode=parse_mode,
+                )
+            except TelegramBadRequest as e:
+                if "can't parse entities" in str(e).lower():
+                    logger.warning(f"HTML parse error in VIP text for {chat_id}, retrying without formatting")
+                    text_msg = await bot.send_message(
+                        chat_id, text,
+                        reply_markup=keyboard,
+                    )
+                else:
+                    raise
             prices = [types.LabeledPrice(label="Unlock Secret Content", amount=stars)]
             invoice_msg = await bot.send_invoice(
                 chat_id=chat_id,
