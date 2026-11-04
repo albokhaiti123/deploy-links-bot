@@ -117,7 +117,7 @@ async def create_campaign_atomic(
             if old:
                 old_id = old[0]
                 await db.execute(
-                    "UPDATE user_campaigns SET status='replaced', completed_at=? WHERE id=?",
+                    "UPDATE user_campaigns SET status='replaced', completed_at=?, run_id=NULL WHERE id=?",
                     (now, old_id),
                 )
                 await db.execute(
@@ -197,7 +197,9 @@ async def get_due_recurring_campaigns() -> list[dict]:
 
 
 async def suspend_all_active_campaigns() -> int:
-    """Owner global disable: suspend all current campaigns. Returns count."""
+    """Owner global disable: suspend all current campaigns. Returns count.
+    Clears run_id and deletes execution claims so running workers detect invalidation.
+    """
     async with get_db() as db:
         placeholders = ",".join("?" * len(CURRENT_STATUSES))
         async with db.execute(
@@ -206,11 +208,25 @@ async def suspend_all_active_campaigns() -> int:
         ) as c:
             count = (await c.fetchone())[0]
         if count > 0:
+            # Collect campaign ids to delete claims
+            async with db.execute(
+                f"SELECT id FROM user_campaigns WHERE status IN ({placeholders})",
+                CURRENT_STATUSES,
+            ) as c:
+                ids = [r[0] for r in await c.fetchall()]
+            # Clear run_id so workers detect invalidation on next fencing check
             await db.execute(
-                f"UPDATE user_campaigns SET status='suspended_admin' "
+                f"UPDATE user_campaigns SET status='suspended_admin', run_id=NULL "
                 f"WHERE status IN ({placeholders})",
                 CURRENT_STATUSES,
             )
+            # Delete all execution claims for suspended campaigns
+            if ids:
+                id_placeholders = ",".join("?" * len(ids))
+                await db.execute(
+                    f"DELETE FROM user_campaign_execution_claims WHERE campaign_id IN ({id_placeholders})",
+                    ids,
+                )
             await db.commit()
     return count
 
@@ -218,36 +234,46 @@ async def suspend_all_active_campaigns() -> int:
 # ── Execution Claims ─────────────────────────────────────────────────────────
 
 async def claim_execution(campaign_id: int, run_id: str) -> bool:
-    """Attempt to claim execution. Returns False if another claim exists and is not expired."""
+    """Attempt to claim execution. Returns False if another valid claim exists.
+    Uses BEGIN IMMEDIATE to atomically delete expired claim and insert new one.
+    All timestamps stored and compared as identical format strings to prevent ASCII ordering bugs.
+    """
     now = datetime.now()
-    expires = now + timedelta(minutes=CLAIM_TTL_MINUTES)
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    expires_str = (now + timedelta(minutes=CLAIM_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+
     async with get_db() as db:
-        # Remove expired claim if any
-        await db.execute(
-            "DELETE FROM user_campaign_execution_claims WHERE campaign_id=? AND expires_at<?",
-            (campaign_id, now.isoformat()),
-        )
+        await db.execute("BEGIN IMMEDIATE")
         try:
+            # Remove expired claim if any (only if expires_at < now)
+            await db.execute(
+                "DELETE FROM user_campaign_execution_claims WHERE campaign_id=? AND expires_at < ?",
+                (campaign_id, now_str),
+            )
             await db.execute(
                 "INSERT INTO user_campaign_execution_claims "
                 "(campaign_id, run_id, claimed_at, heartbeat_at, expires_at) VALUES (?,?,?,?,?)",
-                (campaign_id, run_id, now, now, expires),
+                (campaign_id, run_id, now_str, now_str, expires_str),
             )
             await db.commit()
             return True
         except Exception:
-            await db.execute("ROLLBACK")
+            try:
+                await db.execute("ROLLBACK")
+            except Exception:
+                pass
             return False
 
 
 async def heartbeat_claim(campaign_id: int, run_id: str) -> None:
     now = datetime.now()
-    expires = now + timedelta(minutes=CLAIM_TTL_MINUTES)
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    expires_str = (now + timedelta(minutes=CLAIM_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
     async with get_db() as db:
         await db.execute(
             "UPDATE user_campaign_execution_claims SET heartbeat_at=?, expires_at=? "
             "WHERE campaign_id=? AND run_id=?",
-            (now, expires, campaign_id, run_id),
+            (now_str, expires_str, campaign_id, run_id),
         )
         await db.commit()
 
@@ -262,10 +288,10 @@ async def release_claim(campaign_id: int) -> None:
 
 async def recover_stale_claims() -> None:
     """On startup: clear expired claims and reset those campaigns to 'active'."""
-    now = datetime.now().isoformat()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with get_db() as db:
         async with db.execute(
-            "SELECT campaign_id FROM user_campaign_execution_claims WHERE expires_at<?", (now,)
+            "SELECT campaign_id FROM user_campaign_execution_claims WHERE expires_at < ?", (now_str,)
         ) as c:
             stale = [r[0] for r in await c.fetchall()]
         if stale:
@@ -280,6 +306,7 @@ async def recover_stale_claims() -> None:
                 stale,
             )
             await db.commit()
+
 
 
 # ── Deliveries ───────────────────────────────────────────────────────────────

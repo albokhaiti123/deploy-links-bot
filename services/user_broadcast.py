@@ -201,10 +201,15 @@ async def execute_user_campaign(campaign_id: int) -> dict:
                 logger.info(f"UserCampaign {campaign_id}: generation changed mid-run, stopping")
                 break
 
-            # Verify run_id still valid (not replaced)
+            # Verify run_id still valid (not replaced or suspended)
             current = await get_campaign_by_id(campaign_id)
             if not current or current["run_id"] != run_id:
-                logger.info(f"UserCampaign {campaign_id}: run_id invalidated, stopping")
+                # run_id cleared by replacement or suspend — stop immediately
+                logger.info(
+                    f"UserCampaign {campaign_id}: run_id invalidated "
+                    f"(DB run_id={current['run_id'] if current else 'None'}, "
+                    f"expected={run_id}), stopping"
+                )
                 break
 
             # Skip already-delivered
