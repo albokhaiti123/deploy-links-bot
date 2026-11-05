@@ -54,6 +54,14 @@ async def cb_user_menu(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
+    # Feature gate: block access if admin disabled user campaigns
+    if not await _feature_enabled():
+        await callback.answer(
+            "الخدمة متوقفة مؤقتاً لأعمال الصيانة، يرجى المحاولة لاحقاً.",
+            show_alert=True,
+        )
+        return
+
     groups = await get_user_active_groups(user_id)
     quota = await get_quota(user_id, _today())
     current = await get_current_campaign(user_id)

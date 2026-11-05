@@ -46,19 +46,12 @@ async def cb_user_my_groups(callback: types.CallbackQuery):
         return
 
     text = f"📱 <b>My Groups</b> ({len(groups)} registered)\n\n"
-    buttons = []
     for chat_id, title, health in groups:
         icon = HEALTH_ICONS.get(health or "unknown", "❓")
         label = (title or f"Group {chat_id}")[:30]
         text += f"{icon} <b>{label}</b>\n"
-        buttons.append([
-            types.InlineKeyboardButton(
-                text=f"🗑 Remove bot from: {label[:20]}",
-                callback_data=f"user_leave_group_{chat_id}"
-            )
-        ])
 
-    buttons.append([types.InlineKeyboardButton(text="🔙 Back", callback_data="user_menu")])
+    buttons = [[types.InlineKeyboardButton(text="🔙 Back", callback_data="user_menu")]]
     kb = types.InlineKeyboardMarkup(inline_keyboard=buttons)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     await callback.answer()
@@ -68,6 +61,9 @@ async def cb_user_my_groups(callback: types.CallbackQuery):
 async def cb_user_leave_group_confirm(callback: types.CallbackQuery):
     chat_id = int(callback.data.split("_")[-1])
     user_id = callback.from_user.id
+    if user_id != ADMIN_ID:
+        await callback.answer("لا تملك صلاحية إزالة البوت من المجموعات.", show_alert=True)
+        return
 
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -89,6 +85,9 @@ async def cb_user_leave_group_confirm(callback: types.CallbackQuery):
 async def cb_user_leave_confirm(callback: types.CallbackQuery):
     chat_id = int(callback.data.split("_")[-1])
     user_id = callback.from_user.id
+    if user_id != ADMIN_ID:
+        await callback.answer("لا تملك صلاحية إزالة البوت من المجموعات.", show_alert=True)
+        return
 
     success, msg = await leave_group(chat_id, user_id)
     text = f"✅ {msg}" if success else f"❌ {msg}"
