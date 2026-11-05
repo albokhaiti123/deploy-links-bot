@@ -44,26 +44,23 @@ async def cb_toggle_user_campaigns(callback: types.CallbackQuery):
         await set_setting("user_campaigns_generation", str(gen))
         await set_setting("user_campaigns_enabled", "false")
         count = await suspend_all_active_campaigns()
-        await callback.answer(
-            f"✅ User campaigns disabled. {count} campaigns suspended.",
-            show_alert=True,
-        )
+        new_uc = "false"
+        answer_text = f"🔴 User campaigns disabled. {count} campaigns suspended."
     else:
         # Re-enable — campaigns stay suspended, users resume manually
         await set_setting("user_campaigns_enabled", "true")
-        await callback.answer(
-            "✅ User campaigns enabled. Existing campaigns remain suspended until users resume them.",
-            show_alert=True,
-        )
+        new_uc = "true"
+        answer_text = "🟢 User campaigns enabled. Existing campaigns remain suspended until users resume them."
 
-    # Refresh admin panel
+    # Update keyboard to reflect new state (use edit_reply_markup to avoid 'not modified')
     from handlers.admin.panel import get_admin_keyboard
     promo_enabled = await get_setting("promo_enabled")
-    text = "━━━━━━━━━━━━━━\n⚙️ <b>لوحة التحكم</b>\n━━━━━━━━━━━━━━"
-    await callback.message.edit_text(
-        text, reply_markup=get_admin_keyboard(promo_enabled, callback.from_user.id),
-        parse_mode=ParseMode.HTML,
-    )
+    new_kb = get_admin_keyboard(promo_enabled, callback.from_user.id, new_uc)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=new_kb)
+    except Exception:
+        pass
+    await callback.answer(answer_text, show_alert=True)
 
 
 # ── Groups management ────────────────────────────────────────────────────────

@@ -77,7 +77,13 @@ async def cb_admin_toggle_promo(callback: types.CallbackQuery):
     current = await get_setting("promo_enabled")
     new_val = "false" if current == "true" else "true"
     await set_setting("promo_enabled", new_val)
-    await callback.message.edit_reply_markup(reply_markup=get_admin_keyboard(new_val, callback.from_user.id))
+    uc_enabled = await get_setting("user_campaigns_enabled")
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=get_admin_keyboard(new_val, callback.from_user.id, uc_enabled)
+        )
+    except Exception:
+        pass
     status_text = "تم تشغيل الترويج" if new_val == "true" else "تم إيقاف الترويج"
     await callback.answer(status_text)
 

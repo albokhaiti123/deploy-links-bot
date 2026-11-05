@@ -78,8 +78,16 @@ async def cb_user_menu(callback: types.CallbackQuery, state: FSMContext):
     if current:
         buttons.append([types.InlineKeyboardButton(text="📋 My Campaign", callback_data="user_view_campaign")])
 
-    await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons),
-                                     parse_mode=ParseMode.HTML)
+    kb = types.InlineKeyboardMarkup(inline_keyboard=buttons)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        # Message may be a photo/video from /start - send new message instead
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     try:
         await callback.answer()
     except Exception:
