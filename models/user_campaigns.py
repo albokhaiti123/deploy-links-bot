@@ -102,7 +102,7 @@ async def create_campaign_atomic(
             ) as c:
                 row = await c.fetchone()
             count = row[0] if row else 0
-            if count >= 2:
+            if count >= 5:
                 await db.execute("ROLLBACK")
                 return None
 

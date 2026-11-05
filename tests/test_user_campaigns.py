@@ -85,22 +85,20 @@ async def _insert_user(user_id):
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 async def test_01_quota_two_per_day():
-    """Create 2 campaigns → allowed. 3rd → rejected."""
+    """Create 5 campaigns → allowed. 6th → rejected."""
     await _insert_user(USER_A)
     await _make_user_own_group(100, USER_A)
     await _make_user_own_group(200, USER_A)
     await _enable_feature()
 
-    cid1, err1 = await _create_campaign(USER_A, "Camp 1")
-    assert cid1 is not None, f"Campaign 1 failed: {err1}"
+    for i in range(1, 6):
+        cid, err = await _create_campaign(USER_A, f"Camp {i}")
+        assert cid is not None, f"Campaign {i} failed: {err}"
 
-    cid2, err2 = await _create_campaign(USER_A, "Camp 2")
-    assert cid2 is not None, f"Campaign 2 failed: {err2}"
-
-    cid3, err3 = await _create_campaign(USER_A, "Camp 3")
-    assert cid3 is None, "Campaign 3 should have been rejected (quota)"
-    assert "daily" in err3.lower() or "limit" in err3.lower(), f"Wrong error: {err3}"
-    print("  PASS test_01_quota_two_per_day")
+    cid_overflow, err_overflow = await _create_campaign(USER_A, "Camp 6")
+    assert cid_overflow is None, "Campaign 6 should have been rejected (quota)"
+    assert "daily" in err_overflow.lower() or "limit" in err_overflow.lower(), f"Wrong error: {err_overflow}"
+    print("  PASS test_01_quota_five_per_day")
 
 
 async def test_02_quota_not_restored_on_delete():

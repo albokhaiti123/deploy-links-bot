@@ -328,6 +328,6 @@ async def create_user_campaign(
     )
 
     if campaign_id is None:
-        return None, "Daily campaign limit reached (2 per day). Try again tomorrow."
+        return None, "Daily campaign limit reached (5 per day). Try again tomorrow."
 
     return campaign_id, ""

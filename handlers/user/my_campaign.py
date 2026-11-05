@@ -72,16 +72,16 @@ async def cb_user_menu(callback: types.CallbackQuery, state: FSMContext):
     text = (
         f"👤 <b>User Dashboard</b>\n\n"
         f"📱 Groups: <b>{len(groups)}</b>\n"
-        f"📋 Campaigns today: <b>{quota}/2</b>\n"
+        f"📋 Campaigns today: <b>{quota}/5</b>\n"
         f"📢 Current campaign: <b>{'None' if not current else current.get('status','?')}</b> {status_icon if current else ''}"
     )
     buttons = [
         [types.InlineKeyboardButton(text=f"📱 My Groups ({len(groups)})", callback_data="user_my_groups")],
     ]
-    if quota < 2:
+    if quota < 5:
         buttons.append([types.InlineKeyboardButton(text="➕ Create Campaign", callback_data="user_create_campaign")])
     else:
-        buttons.append([types.InlineKeyboardButton(text="🚫 Daily Limit Reached (2/2)", callback_data="user_quota_info")])
+        buttons.append([types.InlineKeyboardButton(text="🚫 Daily Limit Reached (5/5)", callback_data="user_quota_info")])
 
     if current:
         buttons.append([types.InlineKeyboardButton(text="📋 My Campaign", callback_data="user_view_campaign")])
@@ -235,8 +235,8 @@ async def cb_user_create_campaign(callback: types.CallbackQuery, state: FSMConte
 
     # Quota pre-check (non-binding; atomic check is in service)
     quota = await get_quota(user_id, _today())
-    if quota >= 2:
-        await callback.answer("Daily limit reached (2/2). Try again tomorrow.", show_alert=True)
+    if quota >= 5:
+        await callback.answer("Daily limit reached (5/5). Try again tomorrow.", show_alert=True)
         return
 
     groups = await get_user_active_groups(user_id)
