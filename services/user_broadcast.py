@@ -27,6 +27,7 @@ from models.user_campaigns import (
     create_campaign_atomic, update_campaign_status, update_campaign_next_run,
     set_campaign_run_id, claim_execution, heartbeat_claim, release_claim,
     record_delivery, get_delivery_status, get_delivery_stats,
+    check_and_mark_uncertain,
     CURRENT_STATUSES,
 )
 from services.group_manager import handle_send_error
@@ -185,41 +186,33 @@ async def execute_user_campaign(campaign_id: int) -> dict:
 
     target_groups = json.loads(campaign["target_groups_json"] or "[]")
     keyboard = build_keyboard(campaign["buttons_json"])
+    system_generation = campaign["system_generation"]
 
     stats = {"sent": 0, "failed": 0, "skipped": 0, "uncertain": 0}
     heartbeat_counter = 0
 
     try:
         for chat_id in target_groups:
-            # Per-group fencing checks
+            # Quick feature check (inexpensive) — full atomic check below
             if not await _feature_enabled():
                 logger.info(f"UserCampaign {campaign_id}: feature disabled mid-run, stopping")
                 break
 
-            current_gen = await _get_generation()
-            if campaign["system_generation"] != current_gen:
-                logger.info(f"UserCampaign {campaign_id}: generation changed mid-run, stopping")
+            # ATOMIC: verify run_id + generation + not-already-sent, then mark uncertain
+            # No await between this call returning True and _send_user_campaign_message()
+            feat_enabled = await _feature_enabled()
+            ok = await check_and_mark_uncertain(
+                campaign_id, run_id, chat_id, system_generation, feat_enabled
+            )
+            if not ok:
+                # Either invalidated (replaced/suspended) or already delivered — check which
+                existing = await get_delivery_status(campaign_id, run_id, chat_id)
+                if existing in ("sent", "skipped"):
+                    stats["skipped"] += 1
+                    continue
+                # Invalidated — stop loop
+                logger.info(f"UserCampaign {campaign_id}: atomic check failed for group {chat_id}, stopping")
                 break
-
-            # Verify run_id still valid (not replaced or suspended)
-            current = await get_campaign_by_id(campaign_id)
-            if not current or current["run_id"] != run_id:
-                # run_id cleared by replacement or suspend — stop immediately
-                logger.info(
-                    f"UserCampaign {campaign_id}: run_id invalidated "
-                    f"(DB run_id={current['run_id'] if current else 'None'}, "
-                    f"expected={run_id}), stopping"
-                )
-                break
-
-            # Skip already-delivered
-            existing = await get_delivery_status(campaign_id, run_id, chat_id)
-            if existing in ("sent", "skipped"):
-                stats["skipped"] += 1
-                continue
-
-            # Mark uncertain before send
-            await record_delivery(campaign_id, run_id, chat_id, "uncertain")
 
             try:
                 await _send_user_campaign_message(

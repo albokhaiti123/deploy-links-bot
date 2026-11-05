@@ -309,6 +309,73 @@ async def recover_stale_claims() -> None:
 
 
 
+async def check_and_mark_uncertain(
+    campaign_id: int,
+    run_id: str,
+    chat_id: int,
+    system_generation: int,
+    feature_enabled: bool,
+) -> bool:
+    """Atomically verify all send preconditions and record 'uncertain' in one transaction.
+
+    Returns True only if:
+      - feature is still enabled
+      - campaign generation matches
+      - campaign run_id still matches (not replaced/suspended)
+      - delivery not already sent/skipped
+
+    If all checks pass, records status='uncertain' as a last-write-wins guard.
+    No await between this return and _send_user_campaign_message() call in the worker.
+    """
+    if not feature_enabled:
+        return False
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    async with get_db() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            # 1. Reload campaign state atomically
+            async with db.execute(
+                "SELECT run_id, system_generation FROM user_campaigns WHERE id=?",
+                (campaign_id,),
+            ) as c:
+                row = await c.fetchone()
+            if not row:
+                await db.execute("ROLLBACK")
+                return False
+            db_run_id, db_gen = row
+            if db_run_id != run_id or db_gen != system_generation:
+                await db.execute("ROLLBACK")
+                return False
+
+            # 2. Check already delivered
+            async with db.execute(
+                "SELECT status FROM user_campaign_deliveries "
+                "WHERE campaign_id=? AND run_id=? AND chat_id=?",
+                (campaign_id, run_id, chat_id),
+            ) as c:
+                existing = await c.fetchone()
+            if existing and existing[0] in ("sent", "skipped"):
+                await db.execute("ROLLBACK")
+                return False
+
+            # 3. Mark uncertain
+            await db.execute(
+                "INSERT INTO user_campaign_deliveries "
+                "(campaign_id, run_id, chat_id, status, attempted_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(campaign_id, run_id, chat_id) DO UPDATE SET status='uncertain', attempted_at=?",
+                (campaign_id, run_id, chat_id, "uncertain", now_str, now_str),
+            )
+            await db.commit()
+            return True
+        except Exception:
+            try:
+                await db.execute("ROLLBACK")
+            except Exception:
+                pass
+            return False
+
+
 # ── Deliveries ───────────────────────────────────────────────────────────────
 
 async def record_delivery(
