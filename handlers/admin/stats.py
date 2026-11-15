@@ -2,6 +2,7 @@
 Stats and Groups list handlers.
 """
 
+import html
 from aiogram import Router, F, types
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -48,7 +49,7 @@ async def cb_admin_groups(callback: types.CallbackQuery):
         text = "🌐 <b>آخر 20 مجموعة:</b>\n\n"
         for chat_id, title, status, added_at in groups:
             status_icon = "✅" if status == "active" else "❌"
-            text += f"{status_icon} <b>{title or 'بدون اسم'}</b>\n  └ <code>{chat_id}</code>\n"
+            text += f"{status_icon} <b>{html.escape(str(title or 'بدون اسم'))}</b>\n  └ <code>{chat_id}</code>\n"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="admin_main")],
     ])

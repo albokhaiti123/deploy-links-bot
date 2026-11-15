@@ -6,6 +6,7 @@ Callback data pattern: btn_{action}_{context}[_{id}]
 FSM: Uses a new ButtonWizard state for the add flow.
 """
 
+import html
 from aiogram import Router, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
@@ -60,7 +61,7 @@ async def show_button_list(target, context: str):
     else:
         for btn in buttons_data:
             icon = "✅" if btn["is_active"] else "❌"
-            text += f"{icon} <b>{btn['label']}</b>\n  └ {btn['url']}\n"
+            text += f"{icon} <b>{html.escape(str(btn['label']))}</b>\n  └ {html.escape(str(btn['url']))}\n"
 
     kb_rows = []
     for btn in buttons_data:
@@ -116,6 +117,8 @@ async def cb_btn_add(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(ButtonWizard.waiting_for_label)
 async def process_btn_label(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال نص الزر أو /cancel للإلغاء.")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -133,6 +136,8 @@ async def process_btn_label(message: types.Message, state: FSMContext):
 
 @router.message(ButtonWizard.waiting_for_url)
 async def process_btn_url(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ http:// أو https:// أو tg://")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -143,7 +148,7 @@ async def process_btn_url(message: types.Message, state: FSMContext):
     context = data["btn_context"]
     label = data["btn_label"]
     await add_button(context, label, message.text)
-    await message.answer(f"✅ تم إضافة الزر <b>{label}</b> بنجاح!", parse_mode=ParseMode.HTML)
+    await message.answer(f"✅ تم إضافة الزر <b>{html.escape(str(label))}</b> بنجاح!", parse_mode=ParseMode.HTML)
     await state.clear()
 
 

@@ -11,17 +11,19 @@ Handles:
 import asyncio
 import time
 
+import html
 from aiogram import types
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from core.bot import bot
 from core.config import BOT_USERNAME
 from core.logging_config import logger
 from models.campaigns import (
-    get_campaign, get_verified_group_ids, add_verified_group,
-    update_user_progress, ensure_user_progress, update_campaign_last_broadcast,
+    get_campaign, get_verified_group_ids, get_globally_verified_group_ids,
+    add_verified_group, update_user_progress, ensure_user_progress,
+    update_campaign_last_broadcast,
 )
 from models.groups import get_user_active_groups, deactivate_group
 from models.events import log_event
@@ -34,6 +36,23 @@ from services.media import send_media_message
 # Verify cooldown: {(user_id, campaign_id): timestamp}
 _campaign_verify_cooldown: dict[tuple[int, int], float] = {}
 VERIFY_COOLDOWN_SECONDS = 10
+
+async def build_campaign_keyboard(
+    campaign_id: int, button_text: str, bot_username: str
+) -> InlineKeyboardMarkup:
+    """Build inline keyboard for a campaign promo including active custom buttons."""
+    from models.custom_buttons import get_buttons
+
+    cta_button = InlineKeyboardButton(
+        text=button_text,
+        url=f"https://t.me/{bot_username}?start=camp_{campaign_id}",
+    )
+    kb_rows = [[cta_button]]
+    custom = await get_buttons(f"campaign_{campaign_id}", active_only=True)
+    for btn in custom:
+        kb_rows.append([InlineKeyboardButton(text=btn["label"], url=btn["url"])])
+    return InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
 
 
 async def show_campaign_progress(target, campaign_id: int, user_id: int) -> None:
@@ -62,10 +81,11 @@ async def show_campaign_progress(target, campaign_id: int, user_id: int) -> None
     required = campaign["required_groups"]
     await log_event(0, user_id, f"campaign_{campaign_id}_viewed")
 
+    safe_name = html.escape(str(campaign["name"] or ""))
     if status == "unlocked":
         text = (
             f"🎉 <b>Offer Unlocked!</b>\n\n"
-            f"📣 <b>{campaign['name']}</b>\n\n"
+            f"📣 <b>{safe_name}</b>\n\n"
             f"✅ You completed the requirement ({required}/{required} groups).\n\n"
             f"Tap the button below to claim your offer."
         )
@@ -81,7 +101,7 @@ async def show_campaign_progress(target, campaign_id: int, user_id: int) -> None
         bot_info = await bot.get_me()
         text = (
             f"🔒 <b>Offer Locked</b>\n\n"
-            f"📣 <b>{campaign['name']}</b>\n\n"
+            f"📣 <b>{safe_name}</b>\n\n"
             f"To unlock this offer, add the bot to <b>{required}</b> groups.\n\n"
             f"📊 Progress: <b>{verified_count}</b> / <b>{required}</b>\n"
             f"<code>{bar}</code>\n"
@@ -116,9 +136,13 @@ async def verify_campaign_groups(callback: types.CallbackQuery, campaign_id: int
     """Verify that the user has added the bot to enough groups for a campaign."""
     user_id = callback.from_user.id
 
-    # Rate limit
+    # Rate limit with automatic stale-entry cleanup
     key = (user_id, campaign_id)
     now = time.time()
+    if len(_campaign_verify_cooldown) > 500:
+        stale_keys = [k for k, ts in _campaign_verify_cooldown.items() if now - ts > VERIFY_COOLDOWN_SECONDS * 6]
+        for k in stale_keys:
+            _campaign_verify_cooldown.pop(k, None)
     if key in _campaign_verify_cooldown:
         elapsed = now - _campaign_verify_cooldown[key]
         if elapsed < VERIFY_COOLDOWN_SECONDS:
@@ -147,13 +171,15 @@ async def verify_campaign_groups(callback: types.CallbackQuery, campaign_id: int
     bot_info = await bot.get_me()
     bot_id = bot_info.id
 
-    # Get user's groups and already-verified groups
+    # Get user's groups, already-verified groups for this campaign, and globally used groups
     user_groups = await get_user_active_groups(user_id)
     already_verified = await get_verified_group_ids(campaign_id, user_id)
+    used_in_other_campaigns = await get_globally_verified_group_ids(exclude_campaign_id=campaign_id)
 
     new_verified = 0
-    for chat_id, title in user_groups:
-        if chat_id in already_verified:
+    for group_row in user_groups:
+        chat_id, title = group_row[0], group_row[1]
+        if chat_id in already_verified or chat_id in used_in_other_campaigns:
             continue
         if len(already_verified) + new_verified >= required:
             break
@@ -227,17 +253,18 @@ async def execute_campaign_broadcast(
         return
 
     bot_info = await bot.get_me()
-    cta_button = InlineKeyboardButton(
-        text=campaign["button_text"],
-        url=f"https://t.me/{bot_info.username}?start=camp_{campaign_id}",
+    kb = await build_campaign_keyboard(
+        campaign_id, campaign["button_text"], bot_info.username or BOT_USERNAME
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[cta_button]])
 
     targets_list: list[int] = []
+    group_set: set[int] = set()
     if target in ("users", "all"):
         targets_list += await get_all_user_ids()
     if target in ("groups", "all"):
-        targets_list += await get_active_group_ids()
+        g_ids = await get_active_group_ids()
+        targets_list += g_ids
+        group_set = set(g_ids)
 
     success = 0
     for chat_id in targets_list:
@@ -249,8 +276,21 @@ async def execute_campaign_broadcast(
                 keyboard=kb,
             )
             success += 1
+        except TelegramRetryAfter as e:
+            logger.warning(f"Campaign {campaign_id} rate limited for {chat_id}, sleeping {e.retry_after}s")
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await send_media_message(
+                    bot, chat_id, campaign["promo_text"],
+                    media_id=campaign.get("media_file_id"),
+                    media_type=campaign.get("media_type"),
+                    keyboard=kb,
+                )
+                success += 1
+            except Exception as retry_err:
+                logger.warning(f"Campaign {campaign_id} retry failed for {chat_id}: {retry_err}")
         except TelegramForbiddenError:
-            if target in ("groups", "all"):
+            if chat_id in group_set:
                 await deactivate_group(chat_id)
         except TelegramBadRequest as e:
             err = str(e).lower()
@@ -275,11 +315,9 @@ async def execute_recurring_campaign_cycle(campaign_id: int) -> None:
         return
 
     bot_info = await bot.get_me()
-    cta = InlineKeyboardButton(
-        text=campaign["button_text"],
-        url=f"https://t.me/{bot_info.username}?start=camp_{campaign_id}",
+    kb = await build_campaign_keyboard(
+        campaign_id, campaign["button_text"], bot_info.username or BOT_USERNAME
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[cta]])
 
     targets: list[int] = []
     targets += await get_all_user_ids()
@@ -293,6 +331,18 @@ async def execute_recurring_campaign_cycle(campaign_id: int) -> None:
                 media_type=campaign.get("media_type"),
                 keyboard=kb,
             )
+        except TelegramRetryAfter as e:
+            logger.warning(f"Recurring campaign {campaign_id} rate limited for {chat_id}, sleeping {e.retry_after}s")
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await send_media_message(
+                    bot, chat_id, campaign["promo_text"],
+                    media_id=campaign.get("media_file_id"),
+                    media_type=campaign.get("media_type"),
+                    keyboard=kb,
+                )
+            except Exception as retry_err:
+                logger.warning(f"Recurring campaign {campaign_id} retry failed for {chat_id}: {retry_err}")
         except TelegramForbiddenError:
             await deactivate_group(chat_id)
         except TelegramBadRequest as e:

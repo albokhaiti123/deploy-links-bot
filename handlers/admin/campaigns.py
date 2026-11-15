@@ -6,6 +6,7 @@ stats, publish, test, pause/resume/delete, recurring.
 import asyncio
 from datetime import datetime
 
+import html
 from aiogram import Router, F, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
@@ -20,7 +21,7 @@ from models.campaigns import (
     get_campaign, create_campaign, update_campaign_status,
     set_campaign_recurring, list_campaigns, get_campaign_stats,
 )
-from services.campaign import execute_campaign_broadcast
+from services.campaign import execute_campaign_broadcast, build_campaign_keyboard
 from services.media import send_media_message
 from states.states import CampaignWizard
 
@@ -65,6 +66,8 @@ async def cb_cmp_create(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(CampaignWizard.name)
 async def process_cw_name(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال اسم الحملة كنص أو /cancel.")
     if message.text == "/cancel":
         await message.answer("❌ تم إلغاء إنشاء الحملة.")
         await state.clear()
@@ -81,6 +84,8 @@ async def process_cw_name(message: types.Message, state: FSMContext):
 
 @router.message(CampaignWizard.promo_text)
 async def process_cw_promo_text(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال نص الإعلان أو /cancel.")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -118,6 +123,8 @@ async def process_cw_media(message: types.Message, state: FSMContext):
 
 @router.message(CampaignWizard.button_text)
 async def process_cw_button_text(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال نص الزر أو /cancel.")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -133,6 +140,8 @@ async def process_cw_button_text(message: types.Message, state: FSMContext):
 
 @router.message(CampaignWizard.required_groups)
 async def process_cw_required_groups(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ أرسل رقماً بين 1 و 50.")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -150,6 +159,8 @@ async def process_cw_required_groups(message: types.Message, state: FSMContext):
 
 @router.message(CampaignWizard.unlock_content)
 async def process_cw_unlock_content(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال محتوى الفتح كنص أو /cancel.")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -243,10 +254,10 @@ async def _show_confirm(callback: types.CallbackQuery, state: FSMContext):
     del_ar = "بدون حذف" if del_sec == 0 else f"بعد {del_sec} ثانية"
     text = (
         f"📋 <b>ملخص الحملة:</b>\n\n"
-        f"📌 الاسم: {data['name']}\n"
-        f"📝 نص الإعلان: {data['promo_text'][:50]}...\n"
+        f"📌 الاسم: {html.escape(str(data['name']))}\n"
+        f"📝 نص الإعلان: {html.escape(str(data['promo_text'][:50]))}...\n"
         f"🖼 وسائط: {'نعم' if data.get('media_file_id') else 'لا'}\n"
-        f"🔘 زر CTA: {data['button_text']}\n"
+        f"🔘 زر CTA: {html.escape(str(data['button_text']))}\n"
         f"👥 المجموعات المطلوبة: {data['required_groups']}\n"
         f"🗑 حذف محتوى الفتح: {del_ar}\n"
         f"📤 وضع النشر: {mode_ar}\n\n"
@@ -273,7 +284,7 @@ async def cb_cw_confirm(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     campaign_id = await create_campaign(data)
     await callback.message.answer(
-        f"✅ <b>تم إنشاء الحملة بنجاح!</b>\n\nالمعرف: #{campaign_id}\nالاسم: {data['name']}",
+        f"✅ <b>تم إنشاء الحملة بنجاح!</b>\n\nالمعرف: #{campaign_id}\nالاسم: {html.escape(str(data['name']))}",
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()
@@ -316,14 +327,16 @@ async def show_campaign_admin_view(message: types.Message, campaign_id: int):
     status_map = {"active": "نشطة ✅", "paused": "متوقفة ⏸", "deleted": "محذوفة 🗑"}
     mode_ar = "يدوي" if campaign.get("mode") == "manual" else f"دوري (كل {campaign.get('repeat_hours', 0)} ساعة)"
     text = (
-        f"🎯 <b>الحملة #{campaign_id}: {campaign['name']}</b>\n\n"
+        f"🎯 <b>الحملة #{campaign_id}: {html.escape(str(campaign['name']))}</b>\n\n"
         f"📊 الحالة: {status_map.get(campaign['status'], campaign['status'])}\n"
         f"📤 وضع النشر: {mode_ar}\n"
         f"👥 المجموعات المطلوبة: {campaign['required_groups']}\n\n"
         f"📈 <b>إحصائيات:</b>\n"
+        f"  👁 المشاهدات: {stats.get('views', 0)}\n"
         f"  🚀 بدأوا: {stats['started']}\n"
         f"  ➕ مجموعات أُضيفت: {stats['groups_added']}\n"
         f"  🔓 فتحوا المحتوى: {stats['unlocked']}\n"
+        f"  🎁 استلموا المحتوى: {stats.get('delivered', 0)}\n"
     )
     buttons = []
     if campaign["status"] == "active":
@@ -422,8 +435,7 @@ async def cb_cmp_test(callback: types.CallbackQuery):
         await callback.answer("❌ الحملة غير موجودة.", show_alert=True)
         return
     bot_info = await bot.get_me()
-    cta = InlineKeyboardButton(text=campaign["button_text"], url=f"https://t.me/{bot_info.username}?start=camp_{cid}")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[cta]])
+    kb = await build_campaign_keyboard(cid, campaign["button_text"], bot_info.username or BOT_USERNAME)
     try:
         await send_media_message(
             bot, callback.from_user.id,
@@ -453,8 +465,7 @@ async def cb_cmp_test_group(callback: types.CallbackQuery):
         await callback.answer("❌ الحملة غير موجودة.", show_alert=True)
         return
     bot_info = await bot.get_me()
-    cta = InlineKeyboardButton(text=campaign["button_text"], url=f"https://t.me/{bot_info.username}?start=camp_{cid}")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[cta]])
+    kb = await build_campaign_keyboard(cid, campaign["button_text"], bot_info.username or BOT_USERNAME)
     try:
         chat_id = int(test_group)
         await send_media_message(

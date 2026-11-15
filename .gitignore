@@ -8,3 +8,5 @@ bot.log
 venv/
 .venv/
 
+ 
+COMPLETE_PROJECT*.txt

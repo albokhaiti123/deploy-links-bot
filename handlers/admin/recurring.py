@@ -5,6 +5,7 @@ edit text, preview, send now.
 
 import asyncio
 
+import html
 from aiogram import Router, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
@@ -40,7 +41,8 @@ async def cb_admin_recurring_bw(callback: types.CallbackQuery, state: FSMContext
         for row in rows:
             rb_id, target, repeat_hours, is_active, rb_text = row
             status_icon = "▶️" if is_active else "⏸"
-            preview = (rb_text[:30] + "...") if rb_text and len(rb_text) > 30 else (rb_text or "")
+            raw_preview = (rb_text[:30] + "...") if rb_text and len(rb_text) > 30 else (rb_text or "")
+            preview = html.escape(raw_preview)
             text += f"{status_icon} #{rb_id} | {target_map.get(target, target)} | كل {repeat_hours}h | {preview}\n"
     buttons = []
     if rows:
@@ -130,7 +132,7 @@ async def cb_rbw_edit(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(rbw_edit_id=rb_id)
     await callback.message.answer(
         f"📝 <b>تعديل الإذاعة الدورية #{rb_id}</b>\n\n"
-        f"النص الحالي:\n<blockquote>{(rb['text'] or '')[:200]}</blockquote>\n\n"
+        f"النص الحالي:\n<blockquote>{html.escape((rb['text'] or '')[:200])}</blockquote>\n\n"
         f"أرسل النص الجديد:\n(لإلغاء أرسل /cancel)",
         parse_mode=ParseMode.HTML,
     )
@@ -140,6 +142,8 @@ async def cb_rbw_edit(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(AdminEdit.waiting_for_rbw_edit_text)
 async def process_rbw_edit_text(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال النص الجديد أو /cancel.")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -220,13 +224,7 @@ async def cb_rbw_target(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(AdminEdit.waiting_for_rbw_text, F.text)
-async def process_rbw_text(message: types.Message, state: FSMContext):
-    if message.text == "/cancel":
-        await message.answer("❌ تم الإلغاء.")
-        await state.clear()
-        return
-    await state.update_data(rbw_text=message.html_text or message.text)
+async def _ask_rbw_hours(message: types.Message, state: FSMContext) -> None:
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="كل 6 ساعات", callback_data="rbw_hours_6"),
          InlineKeyboardButton(text="كل 12 ساعة", callback_data="rbw_hours_12")],
@@ -235,6 +233,79 @@ async def process_rbw_text(message: types.Message, state: FSMContext):
     ])
     await message.answer("🔄 كل كم ساعة تريد تكرار هذه الإذاعة؟", reply_markup=kb, parse_mode=ParseMode.HTML)
     await state.set_state(AdminEdit.waiting_for_rbw_hours)
+
+
+@router.message(AdminEdit.waiting_for_rbw_text, F.text)
+async def process_rbw_text(message: types.Message, state: FSMContext):
+    if message.text == "/cancel":
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    await state.update_data(rbw_text=message.html_text or message.text)
+    await message.answer(
+        "🖼 أرسل صورة أو فيديو لإرفاقه مع الإذاعة الدورية.\n"
+        "أو أرسل /skip للإذاعة النصية فقط.\n"
+        "لإلغاء الأمر أرسل /cancel",
+        parse_mode=ParseMode.HTML,
+    )
+    await state.set_state(AdminEdit.waiting_for_rbw_media)
+
+
+@router.message(AdminEdit.waiting_for_rbw_media, F.photo | F.video | F.text)
+async def process_rbw_media(message: types.Message, state: FSMContext):
+    if message.text == "/cancel":
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    if message.text == "/skip":
+        await state.update_data(rbw_media_id=None, rbw_media_type=None, rbw_is_vip=False, rbw_stars=0)
+        await _ask_rbw_hours(message, state)
+        return
+    if message.photo:
+        await state.update_data(rbw_media_id=message.photo[-1].file_id, rbw_media_type="photo")
+    elif message.video:
+        await state.update_data(rbw_media_id=message.video.file_id, rbw_media_type="video")
+    else:
+        await message.answer("❌ يجب إرسال صورة أو فيديو، أو /skip، أو /cancel.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 مجانية (مفتوحة)", callback_data="rbw_vip_free")],
+        [InlineKeyboardButton(text="⭐️ مدفوعة (VIP - بنجوم تيليجرام)", callback_data="rbw_vip_paid")],
+    ])
+    await message.answer(
+        "💎 هل تريد أن تكون وسائط الإذاعة الدورية مجانية أم مدفوعة بالنجوم؟",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML,
+    )
+    await state.set_state(AdminEdit.waiting_for_rbw_vip)
+
+
+@router.callback_query(AdminEdit.waiting_for_rbw_vip, F.data.startswith("rbw_vip_"))
+async def cb_rbw_vip(callback: types.CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        return
+    if callback.data == "rbw_vip_free":
+        await state.update_data(rbw_is_vip=False, rbw_stars=0)
+        await _ask_rbw_hours(callback.message, state)
+    else:
+        await state.update_data(rbw_is_vip=True)
+        await callback.message.answer("⭐️ كم عدد النجوم المطلوبة لفتح المحتوى؟ (أرسل رقماً بين 1 و 2500):")
+        await state.set_state(AdminEdit.waiting_for_rbw_stars)
+    await callback.answer()
+
+
+@router.message(AdminEdit.waiting_for_rbw_stars)
+async def process_rbw_stars(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال أرقام فقط (مثلاً 50).")
+    if message.text == "/cancel":
+        await message.answer("❌ تم الإلغاء.")
+        await state.clear()
+        return
+    if not message.text.isdigit() or not (1 <= int(message.text) <= 2500):
+        return await message.answer("❌ يرجى إرسال رقم بين 1 و 2500.")
+    await state.update_data(rbw_stars=int(message.text))
+    await _ask_rbw_hours(message, state)
 
 
 @router.callback_query(AdminEdit.waiting_for_rbw_hours, F.data.startswith("rbw_hours_"))
@@ -247,6 +318,10 @@ async def cb_rbw_hours(callback: types.CallbackQuery, state: FSMContext):
         target=data.get("rbw_target", "all"),
         text=data.get("rbw_text", ""),
         repeat_hours=hours,
+        media_id=data.get("rbw_media_id"),
+        media_type=data.get("rbw_media_type"),
+        is_vip=bool(data.get("rbw_is_vip", False)),
+        stars=int(data.get("rbw_stars", 0)),
     )
     await state.clear()
     await callback.message.answer(f"✅ تم إنشاء إذاعة دورية (كل {hours} ساعة)!")

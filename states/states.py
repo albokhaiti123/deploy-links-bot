@@ -25,6 +25,9 @@ class AdminEdit(StatesGroup):
     waiting_for_start_media = State()
     waiting_for_rbw_text = State()
     waiting_for_rbw_edit_text = State()
+    waiting_for_rbw_media = State()
+    waiting_for_rbw_vip = State()
+    waiting_for_rbw_stars = State()
     waiting_for_rbw_hours = State()
 
 

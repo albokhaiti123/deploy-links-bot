@@ -6,6 +6,7 @@ Enforces feature switch, quota, ownership, and content-type restrictions.
 import json
 import asyncio
 
+import html
 from aiogram import Router, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
@@ -14,11 +15,11 @@ from core.config import ADMIN_ID
 from models.groups import get_user_active_groups
 from models.user_campaigns import (
     get_current_campaign, get_quota, update_campaign_status,
-    get_delivery_stats, _today,
+    resume_user_campaign, get_delivery_stats, _today,
 )
 from services.user_broadcast import (
     create_user_campaign, execute_user_campaign,
-    _feature_enabled, validate_buttons,
+    _feature_enabled, _get_generation, validate_buttons,
 )
 from states.user_states import UserCampaignWizard
 
@@ -104,7 +105,7 @@ async def cb_user_menu(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "user_quota_info")
 async def cb_user_quota_info(callback: types.CallbackQuery):
-    await callback.answer("You've used both campaigns for today. Try again tomorrow.", show_alert=True)
+    await callback.answer("You've used all 5 campaigns for today. Try again tomorrow.", show_alert=True)
 
 
 # ── View current campaign ────────────────────────────────────────────────────
@@ -137,10 +138,10 @@ async def cb_user_view_campaign(callback: types.CallbackQuery):
     buttons = []
     if current["status"] == "active":
         buttons.append([types.InlineKeyboardButton(text="⏸ Pause", callback_data=f"user_pause_campaign_{current['id']}")])
-    elif current["status"] == "paused":
+    elif current["status"] in ("paused", "suspended_admin"):
         buttons.append([types.InlineKeyboardButton(text="▶️ Resume", callback_data=f"user_resume_campaign_{current['id']}")])
 
-    if current["status"] in ("active", "paused") and current["mode"] == "immediate":
+    if current["status"] == "active" and current["mode"] == "immediate":
         buttons.append([types.InlineKeyboardButton(text="📢 Send Now", callback_data=f"user_send_now_{current['id']}")])
 
     buttons.append([types.InlineKeyboardButton(text="🗑 Delete Campaign", callback_data=f"user_delete_campaign_{current['id']}")])
@@ -177,7 +178,8 @@ async def cb_user_resume_campaign(callback: types.CallbackQuery):
     if not current or current["id"] != cid:
         await callback.answer("Campaign not found.", show_alert=True)
         return
-    await update_campaign_status(cid, "active")
+    gen = await _get_generation()
+    await resume_user_campaign(cid, gen)
     await callback.answer("▶️ Campaign resumed.")
     await cb_user_view_campaign(callback)
 
@@ -214,6 +216,9 @@ async def cb_user_send_now(callback: types.CallbackQuery):
     if not current or current["id"] != cid:
         await callback.answer("Campaign not found.", show_alert=True)
         return
+    if current["status"] != "active":
+        await callback.answer("⏸ Campaign is not active. Resume it first.", show_alert=True)
+        return
     await callback.message.edit_text("🚀 Sending campaign... please wait.")
     try:
         await callback.answer()
@@ -246,7 +251,7 @@ async def cb_user_create_campaign(callback: types.CallbackQuery, state: FSMConte
 
     current = await get_current_campaign(user_id)
     replace_msg = ""
-    if current and current["status"] in ("active", "paused"):
+    if current and current["status"] in ("active", "paused", "suspended_admin"):
         replace_msg = "\n\n⚠️ <b>Note:</b> Your existing campaign will be <b>replaced</b>."
 
     await callback.message.edit_text(
@@ -268,6 +273,9 @@ async def cb_user_create_campaign(callback: types.CallbackQuery, state: FSMConte
 
 @router.message(UserCampaignWizard.text)
 async def process_ucw_text(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ Please send text, /skip, or /cancel.")
+        return
     text = message.text
     if text == "/cancel":
         await state.clear()
@@ -275,7 +283,7 @@ async def process_ucw_text(message: types.Message, state: FSMContext):
         return
 
     skip = text == "/skip"
-    await state.update_data(text=None if skip else text)
+    await state.update_data(text=None if skip else (message.html_text or text))
     await message.answer(
         "📸 <b>Step 2/5 — Photo (optional)</b>\n\n"
         "Send a photo to include with the campaign, or /skip for text-only.",
@@ -297,6 +305,17 @@ async def process_ucw_photo_text(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ Campaign creation cancelled.")
         return
+    if message.text != "/skip":
+        await message.answer("❌ Please send a photo, /skip, or /cancel.")
+        return
+    data = await state.get_data()
+    if not data.get("text"):
+        await message.answer(
+            "❌ Cannot skip photo because you already skipped text. "
+            "A campaign must have either text or a photo.\n"
+            "Please send a photo or /cancel."
+        )
+        return
     await state.update_data(photo_file_id=None)
     await _ask_buttons(message, state)
 
@@ -314,6 +333,8 @@ async def _ask_buttons(message: types.Message, state: FSMContext):
 
 @router.message(UserCampaignWizard.buttons)
 async def process_ucw_buttons(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ Please send button definitions, /skip, or /cancel.")
     if message.text == "/cancel":
         await state.clear()
         await message.answer("❌ Campaign creation cancelled.")
@@ -349,7 +370,7 @@ async def _ask_groups(message: types.Message, state: FSMContext):
 
     text = "👥 <b>Step 4/5 — Select Target Groups</b>\n\nSend group numbers separated by commas (e.g. 1,2,3):\n\n"
     for i, (chat_id, title, health) in enumerate(groups, 1):
-        text += f"{i}. {title or chat_id}\n"
+        text += f"{i}. {html.escape(str(title or chat_id))}\n"
     text += "\nOr send 'all' to target all your groups."
 
     await state.update_data(available_groups=[(g[0], g[1]) for g in groups])
@@ -359,6 +380,8 @@ async def _ask_groups(message: types.Message, state: FSMContext):
 
 @router.message(UserCampaignWizard.groups)
 async def process_ucw_groups(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ Invalid selection. Enter group numbers like: 1,2,3")
     if message.text == "/cancel":
         await state.clear()
         await message.answer("❌ Campaign creation cancelled.")
@@ -393,6 +416,8 @@ async def process_ucw_groups(message: types.Message, state: FSMContext):
 
 @router.message(UserCampaignWizard.mode)
 async def process_ucw_mode(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ Enter 'now' for immediate or a number of hours (min 6).")
     if message.text == "/cancel":
         await state.clear()
         await message.answer("❌ Campaign creation cancelled.")
@@ -417,7 +442,7 @@ async def process_ucw_mode(message: types.Message, state: FSMContext):
     data = await state.get_data()
 
     # Show confirmation
-    text_preview = (data.get("text") or "")[:100]
+    text_preview = html.escape((data.get("text") or "")[:100])
     has_photo = bool(data.get("photo_file_id"))
     has_buttons = bool(data.get("buttons_json"))
     targets = data.get("target_groups", [])
@@ -430,7 +455,7 @@ async def process_ucw_mode(message: types.Message, state: FSMContext):
         f"Buttons: {'Yes' if has_buttons else 'No'}\n"
         f"Target groups: {len(targets)}\n"
         f"Mode: {mode_str}\n\n"
-        f"<b>This will count as one of your 2 daily campaigns.</b>\n"
+        f"<b>This will count as one of your 5 daily campaigns.</b>\n"
         f"{'Your existing campaign will be replaced.' if data.get('replace') else ''}"
     )
     kb = types.InlineKeyboardMarkup(inline_keyboard=[

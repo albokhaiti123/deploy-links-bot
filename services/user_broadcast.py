@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from core.bot import bot
@@ -30,6 +30,7 @@ from models.user_campaigns import (
     check_and_mark_uncertain,
     CURRENT_STATUSES,
 )
+from models.broadcasts import schedule_delete_after
 from services.group_manager import handle_send_error
 
 MAX_TEXT_LEN = 4096
@@ -116,7 +117,7 @@ async def _send_user_campaign_message(chat_id: int, text: str | None,
                                       keyboard: InlineKeyboardMarkup | None) -> int | None:
     """
     Send a user campaign message (photo+caption OR text only).
-    Returns message_id on success, raises on permanent errors.
+    Retries without HTML parse_mode ONLY on entity parse errors.
     """
     if photo_file_id:
         caption = (text or "")[:MAX_CAPTION_LEN]
@@ -128,13 +129,16 @@ async def _send_user_campaign_message(chat_id: int, text: str | None,
                 reply_markup=keyboard,
                 parse_mode=ParseMode.HTML if caption else None,
             )
-        except Exception:
-            msg = await bot.send_photo(
-                chat_id=chat_id,
-                photo=photo_file_id,
-                caption=caption or None,
-                reply_markup=keyboard,
-            )
+        except TelegramBadRequest as e:
+            if "can't parse entities" in str(e).lower():
+                msg = await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo_file_id,
+                    caption=caption or None,
+                    reply_markup=keyboard,
+                )
+            else:
+                raise
     else:
         body = (text or "")[:MAX_TEXT_LEN]
         try:
@@ -144,12 +148,15 @@ async def _send_user_campaign_message(chat_id: int, text: str | None,
                 reply_markup=keyboard,
                 parse_mode=ParseMode.HTML,
             )
-        except Exception:
-            msg = await bot.send_message(
-                chat_id=chat_id,
-                text=body,
-                reply_markup=keyboard,
-            )
+        except TelegramBadRequest as e:
+            if "can't parse entities" in str(e).lower():
+                msg = await bot.send_message(
+                    chat_id=chat_id,
+                    text=body,
+                    reply_markup=keyboard,
+                )
+            else:
+                raise
     return msg.message_id
 
 
@@ -163,6 +170,10 @@ async def execute_user_campaign(campaign_id: int) -> dict:
     campaign = await get_campaign_by_id(campaign_id)
     if not campaign:
         return {"sent": 0, "failed": 0, "skipped": 0, "error": "Campaign not found"}
+
+    if campaign["status"] != "active":
+        logger.info(f"UserCampaign {campaign_id}: status is {campaign['status']} (not active), aborting")
+        return {"sent": 0, "failed": 0, "skipped": 0, "error": f"Campaign is {campaign['status']}"}
 
     # Fencing: check feature enabled and generation
     if not await _feature_enabled():
@@ -214,20 +225,25 @@ async def execute_user_campaign(campaign_id: int) -> dict:
                 logger.info(f"UserCampaign {campaign_id}: atomic check failed for group {chat_id}, stopping")
                 break
 
+            auto_del_sec = int(campaign.get("auto_delete_seconds") or 0)
             try:
-                await _send_user_campaign_message(
+                sent_msg_id = await _send_user_campaign_message(
                     chat_id, campaign["text"], campaign["photo_file_id"], keyboard
                 )
                 await record_delivery(campaign_id, run_id, chat_id, "sent")
                 await update_group_health_ok(chat_id)
+                if sent_msg_id and auto_del_sec > 0:
+                    await schedule_delete_after(chat_id, sent_msg_id, auto_del_sec)
                 stats["sent"] += 1
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after + 1)
                 try:
-                    await _send_user_campaign_message(
+                    sent_msg_id = await _send_user_campaign_message(
                         chat_id, campaign["text"], campaign["photo_file_id"], keyboard
                     )
                     await record_delivery(campaign_id, run_id, chat_id, "sent")
+                    if sent_msg_id and auto_del_sec > 0:
+                        await schedule_delete_after(chat_id, sent_msg_id, auto_del_sec)
                     stats["sent"] += 1
                 except Exception as e2:
                     await handle_send_error(chat_id, e2)

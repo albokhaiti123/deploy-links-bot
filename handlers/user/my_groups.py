@@ -4,6 +4,7 @@ Allows ordinary users to view and manage their own groups (reward_owner_id).
 ADMIN_ID can view all groups via admin/user_management.py.
 """
 
+import html
 from aiogram import Router, F, types
 from aiogram.enums import ParseMode
 
@@ -48,7 +49,7 @@ async def cb_user_my_groups(callback: types.CallbackQuery):
     text = f"📱 <b>My Groups</b> ({len(groups)} registered)\n\n"
     for chat_id, title, health in groups:
         icon = HEALTH_ICONS.get(health or "unknown", "❓")
-        label = (title or f"Group {chat_id}")[:30]
+        label = html.escape((title or f"Group {chat_id}")[:30])
         text += f"{icon} <b>{label}</b>\n"
 
     buttons = [[types.InlineKeyboardButton(text="🔙 Back", callback_data="user_menu")]]

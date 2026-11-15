@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from aiogram import types
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest, TelegramRetryAfter
 
 from core.bot import bot
 from core.logging_config import logger
@@ -48,6 +48,22 @@ async def execute_broadcast(data: dict, status_msg: types.Message) -> None:
                 await schedule_delete(chat_id, sent_msg.message_id, delete_at)
 
             success += 1
+        except TelegramRetryAfter as e:
+            logger.warning(f"Broadcast rate limited for {chat_id}, sleeping {e.retry_after}s")
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                sent_msg = await send_media_message(
+                    bot, chat_id, data["text"],
+                    media_id=data.get("media_id"),
+                    media_type=data.get("media_type"),
+                    is_vip=bool(data.get("is_vip")),
+                    stars=data.get("stars", 0),
+                )
+                if sent_msg and delete_at:
+                    await schedule_delete(chat_id, sent_msg.message_id, delete_at)
+                success += 1
+            except Exception as retry_err:
+                logger.warning(f"Broadcast retry failed for {chat_id}: {retry_err}")
         except TelegramForbiddenError:
             if target != "users":
                 await deactivate_group(chat_id)
@@ -81,10 +97,13 @@ async def execute_recurring_broadcast_cycle(
     from models.broadcasts import update_recurring_broadcast_time
 
     targets: list[int] = []
+    group_set: set[int] = set()
     if target in ("users", "all"):
         targets += await get_all_user_ids()
     if target in ("groups", "all"):
-        targets += await get_active_group_ids()
+        g_ids = await get_active_group_ids()
+        targets += g_ids
+        group_set = set(g_ids)
 
     for chat_id in targets:
         try:
@@ -95,8 +114,22 @@ async def execute_recurring_broadcast_cycle(
                 is_vip=is_vip,
                 stars=stars,
             )
+        except TelegramRetryAfter as e:
+            logger.warning(f"Recurring broadcast {rb_id} rate limited for {chat_id}, sleeping {e.retry_after}s")
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                await send_media_message(
+                    bot, chat_id, text,
+                    media_id=media_id,
+                    media_type=media_type,
+                    is_vip=is_vip,
+                    stars=stars,
+                )
+            except Exception as retry_err:
+                logger.warning(f"Recurring broadcast {rb_id} retry failed for {chat_id}: {retry_err}")
         except TelegramForbiddenError:
-            await deactivate_group(chat_id)
+            if chat_id in group_set:
+                await deactivate_group(chat_id)
         except TelegramBadRequest as e:
             err = str(e).lower()
             if "upgraded to a supergroup" in err:

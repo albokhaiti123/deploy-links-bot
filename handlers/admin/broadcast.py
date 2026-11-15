@@ -50,6 +50,8 @@ async def cb_start_bw(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(BroadcastWizard.text)
 async def process_bw_text(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال نص الإذاعة أو /cancel للإلغاء.")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -107,6 +109,8 @@ async def cb_bw_media_type(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(BroadcastWizard.stars)
 async def process_bw_stars(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال أرقام فقط (مثلاً 50).")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()

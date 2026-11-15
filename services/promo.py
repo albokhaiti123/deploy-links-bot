@@ -116,6 +116,12 @@ async def trigger_group_promo(message, target_user) -> None:
     cooldown = int(cooldown_val) if cooldown_val and cooldown_val.isdigit() else 60
     current_time = time.time()
 
+    if len(_last_promo_times) > 500:
+        cutoff_ts = current_time - max(cooldown, 3600)
+        expired_keys = [k for k, ts in _last_promo_times.items() if ts < cutoff_ts]
+        for k in expired_keys:
+            _last_promo_times.pop(k, None)
+
     if cooldown > 0 and chat_id in _last_promo_times:
         if current_time - _last_promo_times[chat_id] < cooldown:
             logger.info(f"Promo skipped in {chat_id} due to cooldown active.")

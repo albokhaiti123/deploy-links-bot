@@ -115,11 +115,13 @@ async def cb_admin_edit_start_msg(callback: types.CallbackQuery, state: FSMConte
 
 @router.message(AdminEdit.waiting_for_start_msg)
 async def process_start_msg(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال نص رسالة الترحيب أو /cancel.")
     if message.text == "/cancel":
         await message.answer("تم الإلغاء.")
         await state.clear()
         return
-    await set_setting("start_message", message.text)
+    await set_setting("start_message", message.html_text or message.text)
     await message.answer("✅ تم تحديث رسالة الترحيب بنجاح.")
     await state.clear()
 
@@ -138,6 +140,8 @@ async def cb_admin_edit_btn2_name(callback: types.CallbackQuery, state: FSMConte
 
 @router.message(AdminEdit.waiting_for_start_btn2_name)
 async def process_start_btn2_name(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال الاسم الجديد للزر أو /hide أو /cancel.")
     if message.text == "/cancel":
         await message.answer("تم الإلغاء.")
         await state.clear()
@@ -162,6 +166,8 @@ async def cb_admin_edit_btn2_url(callback: types.CallbackQuery, state: FSMContex
 
 @router.message(AdminEdit.waiting_for_start_btn2_url)
 async def process_start_btn2_url(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ عذراً، الرابط غير صحيح. يجب أن يبدأ بـ http أو https أو tg://")
     if message.text == "/cancel":
         await message.answer("تم الإلغاء.")
         await state.clear()
@@ -186,6 +192,8 @@ async def cb_admin_edit_btn2_text(callback: types.CallbackQuery, state: FSMConte
 
 @router.message(AdminEdit.waiting_for_start_btn2_text)
 async def process_start_btn2_text(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال الرسالة النصية أو /cancel.")
     if message.text == "/cancel":
         await message.answer("تم الإلغاء.")
         await state.clear()

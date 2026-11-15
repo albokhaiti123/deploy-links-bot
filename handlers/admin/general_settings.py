@@ -117,6 +117,8 @@ async def cb_set_cooldown(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(AdminEdit.waiting_for_cooldown)
 async def process_cooldown(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال أرقام فقط.\nحاول مجدداً أو أرسل /cancel")
     if message.text == "/cancel":
         await message.answer("تم الإلغاء.")
         await state.clear()
@@ -180,6 +182,8 @@ async def cb_admin_test_group(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(AdminEdit.waiting_for_test_group)
 async def process_test_group(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال معرف رقمي صالح (Chat ID).")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()

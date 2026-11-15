@@ -56,6 +56,9 @@ async def cb_admin_remove_admin(callback: types.CallbackQuery, state: FSMContext
 
 @router.message(AdminEdit.waiting_for_admin_id)
 async def process_admin_id(message: types.Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ يرجى إرسال معرف رقمي صالح.\nحاول مجدداً أو أرسل /cancel")
+        return
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -64,6 +67,10 @@ async def process_admin_id(message: types.Message, state: FSMContext):
         await message.answer("❌ يرجى إرسال معرف رقمي صالح.\nحاول مجدداً أو أرسل /cancel")
         return
     tid = int(message.text.strip())
+    if tid == ADMIN_ID:
+        await message.answer("⛔️ لا يمكنك تعديل صلاحيات المالك الرئيسي.")
+        await state.clear()
+        return
     data = await state.get_data()
     action = data.get("admin_action")
     if action == "add":

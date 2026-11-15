@@ -90,7 +90,7 @@ async def auto_recurring_broadcasts() -> None:
 async def auto_user_recurring_campaigns() -> None:
     """Background task: execute user recurring campaigns with fencing."""
     import asyncio as _asyncio
-    from models.user_campaigns import get_due_recurring_campaigns
+    from models.user_campaigns import get_due_recurring_campaigns, recover_stale_claims
     from models.settings import get_setting as _get_setting
     from services.user_broadcast import execute_user_campaign
 
@@ -108,6 +108,7 @@ async def auto_user_recurring_campaigns() -> None:
             # Check global feature switch first
             if await _get_setting("user_campaigns_enabled") != "true":
                 continue
+            await recover_stale_claims(force_all=False)
             campaigns = await get_due_recurring_campaigns()
             for c in campaigns:
                 cid = c["id"]

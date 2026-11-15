@@ -95,6 +95,11 @@ async def create_campaign_atomic(
     async with get_db() as db:
         await db.execute("BEGIN IMMEDIATE")
         try:
+            # Ensure user row exists for FOREIGN KEY constraint safety
+            await db.execute(
+                "INSERT OR IGNORE INTO users (telegram_id, created_at) VALUES (?, ?)",
+                (user_id, now),
+            )
             # 1. Quota check
             async with db.execute(
                 "SELECT campaigns_created FROM user_campaign_quota WHERE user_id=? AND quota_date=?",
@@ -166,10 +171,26 @@ async def update_campaign_status(campaign_id: int, status: str) -> None:
 
 
 async def update_campaign_next_run(campaign_id: int, next_run_at: datetime) -> None:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    next_str = (
+        next_run_at.strftime("%Y-%m-%d %H:%M:%S")
+        if isinstance(next_run_at, datetime)
+        else str(next_run_at).replace("T", " ")[:19]
+    )
     async with get_db() as db:
         await db.execute(
             "UPDATE user_campaigns SET next_run_at=?, last_run_at=? WHERE id=?",
-            (next_run_at, datetime.now(), campaign_id),
+            (next_str, now_str, campaign_id),
+        )
+        await db.commit()
+
+
+async def resume_user_campaign(campaign_id: int, system_generation: int) -> None:
+    """Resume a paused or admin-suspended campaign and sync its system_generation."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE user_campaigns SET status='active', system_generation=? WHERE id=?",
+            (system_generation, campaign_id),
         )
         await db.commit()
 
@@ -184,12 +205,12 @@ async def set_campaign_run_id(campaign_id: int, run_id: str | None) -> None:
 
 async def get_due_recurring_campaigns() -> list[dict]:
     """Return recurring active campaigns where next_run_at <= now."""
-    now = datetime.now().isoformat()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with get_db() as db:
         async with db.execute(
             "SELECT * FROM user_campaigns WHERE mode='recurring' AND status='active' "
-            "AND (next_run_at IS NULL OR next_run_at <= ?)",
-            (now,),
+            "AND (next_run_at IS NULL OR substr(replace(next_run_at, 'T', ' '), 1, 19) <= ?)",
+            (now_str,),
         ) as c:
             rows = await c.fetchall()
             cols = [d[0] for d in c.description]
@@ -286,10 +307,17 @@ async def release_claim(campaign_id: int) -> None:
         await db.commit()
 
 
-async def recover_stale_claims() -> None:
-    """On startup: clear expired claims and reset those campaigns to 'active'."""
+async def recover_stale_claims(force_all: bool = False) -> None:
+    """Clear expired claims (or all claims on fresh startup) and reset running campaigns to 'active'."""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with get_db() as db:
+        if force_all:
+            await db.execute(
+                "UPDATE user_campaigns SET status='active', run_id=NULL WHERE status='running'"
+            )
+            await db.execute("DELETE FROM user_campaign_execution_claims")
+            await db.commit()
+            return
         async with db.execute(
             "SELECT campaign_id FROM user_campaign_execution_claims WHERE expires_at < ?", (now_str,)
         ) as c:

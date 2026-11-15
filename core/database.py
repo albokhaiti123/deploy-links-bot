@@ -22,8 +22,11 @@ from core.logging_config import logger
 @asynccontextmanager
 async def get_db():
     """Async context manager that yields an aiosqlite connection."""
-    db = await aiosqlite.connect(DB_NAME)
+    db = await aiosqlite.connect(DB_NAME, timeout=30.0)
     try:
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA busy_timeout=5000")
+        await db.execute("PRAGMA foreign_keys=ON")
         yield db
     finally:
         await db.close()
@@ -107,6 +110,15 @@ async def init_db() -> None:
         await _try_add_column(db, "groups", "last_error", "TEXT")
         await _try_add_column(db, "groups", "fail_count", "INTEGER DEFAULT 0")
         await _try_add_column(db, "groups", "last_checked_at", "TIMESTAMP")
+        # Backfill reward_owner_id from added_by for legacy groups (ISS-03)
+        await db.execute(
+            "UPDATE groups SET reward_owner_id = added_by "
+            "WHERE reward_owner_id IS NULL AND added_by IS NOT NULL"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_groups_reward_owner_status "
+            "ON groups(reward_owner_id, status)"
+        )
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -149,6 +161,14 @@ async def init_db() -> None:
                 delete_at TIMESTAMP
             )
         """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_type_created "
+            "ON events(event_type, created_at)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_broadcast_messages_delete_at "
+            "ON broadcast_messages(delete_at)"
+        )
 
         # ── Campaign tables ──────────────────────────────────────
         await db.execute("""

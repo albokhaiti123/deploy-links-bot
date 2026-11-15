@@ -157,6 +157,21 @@ async def get_verified_group_ids(campaign_id: int, user_id: int) -> set[int]:
             return {row[0] for row in await cursor.fetchall()}
 
 
+async def get_globally_verified_group_ids(exclude_campaign_id: int | None = None) -> set[int]:
+    """Return set of chat_ids already verified in any other campaign to prevent group reuse across campaigns."""
+    async with get_db() as db:
+        if exclude_campaign_id is not None:
+            async with db.execute(
+                "SELECT chat_id FROM campaign_groups WHERE campaign_id != ? AND verified = 1",
+                (exclude_campaign_id,),
+            ) as cursor:
+                return {row[0] for row in await cursor.fetchall()}
+        async with db.execute(
+            "SELECT chat_id FROM campaign_groups WHERE verified = 1"
+        ) as cursor:
+            return {row[0] for row in await cursor.fetchall()}
+
+
 async def add_verified_group(
     campaign_id: int, user_id: int, chat_id: int, chat_title: str | None
 ) -> None:
@@ -174,9 +189,15 @@ async def add_verified_group(
 # ── Campaign Stats ───────────────────────────────────────────────────────────
 
 async def get_campaign_stats(campaign_id: int) -> dict:
-    """Return campaign statistics as a dict."""
+    """Return campaign statistics as a dict (views, started, groups_added, unlocked, delivered)."""
     async with get_db() as db:
         stats = {}
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type=?",
+            (f"campaign_{campaign_id}_viewed",),
+        ) as c:
+            stats["views"] = (await c.fetchone())[0]
 
         async with db.execute(
             "SELECT COUNT(*) FROM campaign_user_progress WHERE campaign_id=?",
@@ -195,5 +216,11 @@ async def get_campaign_stats(campaign_id: int) -> dict:
             (campaign_id,),
         ) as c:
             stats["unlocked"] = (await c.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type=?",
+            (f"campaign_{campaign_id}_content_delivered",),
+        ) as c:
+            stats["delivered"] = (await c.fetchone())[0]
 
     return stats

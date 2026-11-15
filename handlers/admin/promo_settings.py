@@ -76,6 +76,8 @@ async def cb_admin_toggle_promo_vip(callback: types.CallbackQuery, state: FSMCon
 
 @router.message(AdminEdit.waiting_for_promo_stars)
 async def process_promo_stars(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال أرقام فقط.")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -107,6 +109,8 @@ async def cb_admin_edit_post_payment_msg(callback: types.CallbackQuery, state: F
 
 @router.message(AdminEdit.waiting_for_post_payment_msg)
 async def process_post_payment_msg(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال نص الرسالة أو /cancel.")
     if message.text == "/cancel":
         await message.answer("❌ تم الإلغاء.")
         await state.clear()
@@ -154,7 +158,7 @@ async def cb_admin_preview_promo(callback: types.CallbackQuery):
         if is_vip:
             if promo_media_id:
                 media_payload = [InputPaidMediaPhoto(media=promo_media_id)] if promo_media_type == "photo" else [InputPaidMediaVideo(media=promo_media_id)]
-                await bot.send_paid_media(chat_id=callback.from_user.id, star_count=stars, media=media_payload, caption=f"👁 معاينة:\n\n{promo_text_formatted}", parse_mode=ParseMode.HTML)
+                await bot.send_paid_media(chat_id=callback.from_user.id, star_count=stars, media=media_payload, caption=f"👁 معاينة:\n\n{promo_text_formatted}", parse_mode=ParseMode.HTML, reply_markup=keyboard)
             else:
                 text_msg = await callback.message.answer(f"👁 معاينة:\n\n{promo_text_formatted}", reply_markup=keyboard, parse_mode=ParseMode.HTML)
                 prices = [types.LabeledPrice(label="فتح المحتوى السري", amount=stars)]
@@ -184,11 +188,13 @@ async def cb_admin_edit_text(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(AdminEdit.waiting_for_promo_text)
 async def process_promo_text(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال نص الإعلان أو /cancel.")
     if message.text == "/cancel":
         await message.answer("تم الإلغاء.")
         await state.clear()
         return
-    await set_setting("promo_text", message.text)
+    await set_setting("promo_text", message.html_text or message.text)
     await message.answer("✅ تم تحديث نص الإعلان بنجاح.")
     await state.clear()
 
@@ -243,6 +249,8 @@ async def cb_admin_edit_url(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(AdminEdit.waiting_for_promo_url)
 async def process_promo_url(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ الرابط غير صحيح. يجب أن يبدأ بـ http:// أو https://\nحاول مجدداً أو أرسل /cancel")
     if message.text == "/cancel":
         await message.answer("تم الإلغاء.")
         await state.clear()
@@ -268,6 +276,8 @@ async def cb_admin_edit_button(callback: types.CallbackQuery, state: FSMContext)
 
 @router.message(AdminEdit.waiting_for_promo_button)
 async def process_promo_button(message: types.Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("❌ يرجى إرسال نص الزر أو /cancel.")
     if message.text == "/cancel":
         await message.answer("تم الإلغاء.")
         await state.clear()

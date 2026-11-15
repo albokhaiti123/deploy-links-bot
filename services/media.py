@@ -56,6 +56,7 @@ async def send_media_message(
                     media=media_payload,
                     caption=text,
                     parse_mode=parse_mode,
+                    reply_markup=keyboard,
                 )
             except TelegramBadRequest as e:
                 if "can't parse entities" in str(e).lower():
@@ -65,6 +66,7 @@ async def send_media_message(
                         star_count=stars,
                         media=media_payload,
                         caption=text,
+                        reply_markup=keyboard,
                     )
                 else:
                     raise

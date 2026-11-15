@@ -2,7 +2,7 @@
 Events model — event logging and statistics queries.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.database import get_db
 
@@ -26,11 +26,15 @@ async def count_events(event_type: str) -> int:
             return (await cursor.fetchone())[0]
 
 
-async def count_events_since(event_type: str, since: str) -> int:
-    """Count events of a type since a datetime expression."""
+async def count_events_since(event_type: str, since: str | datetime | None = None, hours: int = 24) -> int:
+    """Count events of a type since a cutoff timestamp using parameterized query."""
+    if isinstance(since, datetime):
+        cutoff = since
+    else:
+        cutoff = datetime.now() - timedelta(hours=hours)
     async with get_db() as db:
         async with db.execute(
-            f"SELECT COUNT(*) FROM events WHERE event_type=? AND created_at >= {since}",
-            (event_type,),
+            "SELECT COUNT(*) FROM events WHERE event_type=? AND created_at >= ?",
+            (event_type, cutoff),
         ) as cursor:
             return (await cursor.fetchone())[0]

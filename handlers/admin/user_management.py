@@ -3,6 +3,7 @@ Owner user/group management handler.
 Only ADMIN_ID can access this panel.
 """
 
+import html
 from aiogram import Router, F, types
 from aiogram.enums import ParseMode
 
@@ -102,8 +103,9 @@ async def cb_admin_all_groups(callback: types.CallbackQuery):
     for chat_id, title, status, health, owner_id, fail_count in rows:
         icon = health_icons.get(health or "unknown", "❓")
         label = (title or f"{chat_id}")[:25]
+        safe_label = html.escape(label)
         status_str = "🟢" if status == "active" else "🔴"
-        text += f"{status_str} {icon} <b>{label}</b> (owner: {owner_id or '?'})\n"
+        text += f"{status_str} {icon} <b>{safe_label}</b> (owner: {owner_id or '?'})\n"
         buttons.append([
             types.InlineKeyboardButton(
                 text=f"🗑 Remove: {label[:20]}",

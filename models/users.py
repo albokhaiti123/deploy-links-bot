@@ -2,7 +2,7 @@
 Users model — CRUD for the `users` table.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.database import get_db
 
@@ -31,10 +31,15 @@ async def get_total_users() -> int:
             return (await cursor.fetchone())[0]
 
 
-async def get_users_since(since: str) -> int:
-    """Count users created since a datetime expression (e.g. \"datetime('now', '-1 day')\")."""
+async def get_users_since(since: str | datetime | None = None, hours: int = 24) -> int:
+    """Count users created since a cutoff timestamp using parameterized query."""
+    if isinstance(since, datetime):
+        cutoff = since
+    else:
+        cutoff = datetime.now() - timedelta(hours=hours)
     async with get_db() as db:
         async with db.execute(
-            f"SELECT COUNT(*) FROM users WHERE created_at >= {since}"
+            "SELECT COUNT(*) FROM users WHERE created_at >= ?",
+            (cutoff,),
         ) as cursor:
             return (await cursor.fetchone())[0]

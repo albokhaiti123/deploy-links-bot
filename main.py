@@ -78,7 +78,7 @@ async def main():
     logger.info("Database initialized.")
 
     # 3b. Recover stale execution claims from previous run
-    await recover_stale_claims()
+    await recover_stale_claims(force_all=True)
     logger.info("Stale campaign claims recovered.")
 
     # 4. Register all handlers

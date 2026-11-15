@@ -76,6 +76,21 @@ async def cmd_start(message: types.Message):
 
 
 
+async def _edit_start_message(message: types.Message, text: str, kb: InlineKeyboardMarkup) -> None:
+    """Safely edit welcome message whether it is text-only or photo/video media."""
+    is_media = bool(getattr(message, "photo", None) or getattr(message, "video", None) or getattr(message, "caption", None) is not None)
+    try:
+        if is_media:
+            await message.edit_caption(caption=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception:
+        if is_media:
+            await message.edit_caption(caption=text, reply_markup=kb)
+        else:
+            await message.edit_text(text, reply_markup=kb)
+
+
 @router.callback_query(F.data == "start_btn2_click")
 async def cb_start_btn2_click(callback: types.CallbackQuery):
     content = await get_setting("start_btn2_content")
@@ -84,11 +99,24 @@ async def cb_start_btn2_click(callback: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Back", callback_data="start_back")]
     ])
-    await callback.message.edit_text(content, reply_markup=kb, parse_mode=ParseMode.HTML)
+    await _edit_start_message(callback.message, content, kb)
+    try:
+        await callback.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "start_back")
 async def cb_start_back(callback: types.CallbackQuery):
+    from models.admins import is_admin as _is_admin
     bot_info = await bot.get_me()
     text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    if not await _is_admin(callback.from_user.id):
+        existing_rows = kb.inline_keyboard if kb else []
+        user_btn = [[InlineKeyboardButton(text="👤 My Dashboard", callback_data="user_menu")]]
+        kb = InlineKeyboardMarkup(inline_keyboard=existing_rows + user_btn)
+    await _edit_start_message(callback.message, text, kb)
+    try:
+        await callback.answer()
+    except Exception:
+        pass
