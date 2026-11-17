@@ -33,6 +33,7 @@ def get_admin_keyboard(promo_enabled: str, user_id: int,
         uc_icon = "🟢" if user_campaigns_enabled == "true" else "🔴"
         uc_label = f"{uc_icon} حملات المستخدمين: {'مفعّلة' if user_campaigns_enabled == 'true' else 'معطّلة'}"
         keyboard.append([InlineKeyboardButton(text=uc_label, callback_data="admin_toggle_user_campaigns")])
+        keyboard.append([InlineKeyboardButton(text="🔗 روابط دعوة البوت", callback_data="admin_invite_links")])
         keyboard.append([InlineKeyboardButton(text="🌐 جميع المجموعات", callback_data="admin_all_groups")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
