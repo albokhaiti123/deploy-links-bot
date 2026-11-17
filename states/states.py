@@ -29,6 +29,9 @@ class AdminEdit(StatesGroup):
     waiting_for_rbw_vip = State()
     waiting_for_rbw_stars = State()
     waiting_for_rbw_hours = State()
+    waiting_for_inv_label = State()
+    waiting_for_inv_type = State()
+    waiting_for_inv_hours = State()
 
 
 class BroadcastWizard(StatesGroup):

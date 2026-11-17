@@ -78,6 +78,7 @@ async def cb_user_menu(callback: types.CallbackQuery, state: FSMContext):
     )
     buttons = [
         [types.InlineKeyboardButton(text=f"📱 My Groups ({len(groups)})", callback_data="user_my_groups")],
+        [types.InlineKeyboardButton(text="🔗 رابط الاحالة الخاص بي", callback_data="user_my_referral")],
     ]
     if quota < 5:
         buttons.append([types.InlineKeyboardButton(text="➕ Create Campaign", callback_data="user_create_campaign")])

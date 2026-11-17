@@ -120,3 +120,64 @@ async def cb_start_back(callback: types.CallbackQuery):
         await callback.answer()
     except Exception:
         pass
+
+
+# ── Phase 4 Invite & Referral Integration ──
+_orig_get_start_message_data = get_start_message_data
+
+
+async def get_start_message_data(bot_username: str):
+    """Wrap get_start_message_data to always include '🔗 رابط الاحالة الخاص بي' button."""
+    text, kb = await _orig_get_start_message_data(bot_username)
+    rows = list(kb.inline_keyboard) if kb and getattr(kb, "inline_keyboard", None) else []
+    has_ref_btn = any(
+        getattr(btn, "callback_data", None) == "user_my_referral"
+        for row in rows
+        for btn in row
+    )
+    if not has_ref_btn:
+        rows.append([InlineKeyboardButton(text="🔗 رابط الاحالة الخاص بي", callback_data="user_my_referral")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+_orig_cmd_start = cmd_start
+
+
+async def _phase4_wrapped_start(message: types.Message, *args, **kwargs):
+    """Intercept /start inv_<code> and /start ref_<code> deep links before standard /start flow."""
+    raw_text = (getattr(message, "text", None) or "").strip()
+    parts = raw_text.split(maxsplit=1)
+    if len(parts) > 1:
+        payload = parts[1].strip()
+        if payload.startswith("inv_"):
+            from models.invite_links import process_owner_invite_join
+            from models.users import upsert_user
+            code = payload[4:]
+            user = message.from_user
+            if user:
+                await upsert_user(user.id, getattr(user, "username", None), getattr(user, "first_name", None))
+                ok, reason, _ = await process_owner_invite_join(code, user.id)
+                if not ok:
+                    if reason == "paused":
+                        await message.answer("⛔️ عذراً، رابط الدعوة هذا متوقف حالياً من قِبل إدارة البوت.")
+                    elif reason == "expired":
+                        await message.answer("⌛️ عذراً، انتهت صلاحية رابط الدعوة المؤقت هذا.")
+                    else:
+                        await message.answer("❌ عذراً، رابط الدعوة هذا غير صالح أو تم حذفه.")
+                    return
+        elif payload.startswith("ref_"):
+            from models.invite_links import process_user_referral_join
+            from models.users import upsert_user
+            ref_code = payload[4:]
+            user = message.from_user
+            if user:
+                await upsert_user(user.id, getattr(user, "username", None), getattr(user, "first_name", None))
+                await process_user_referral_join(ref_code, user.id)
+
+    return await _orig_cmd_start(message, *args, **kwargs)
+
+
+cmd_start = _phase4_wrapped_start
+for _obs_handler in router.message.handlers:
+    if getattr(_obs_handler, "callback", None) is _orig_cmd_start:
+        _obs_handler.callback = _phase4_wrapped_start

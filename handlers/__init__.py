@@ -21,6 +21,7 @@ from handlers.admin.button_manager import router as admin_button_manager_router
 from handlers.admin.user_management import router as admin_user_mgmt_router
 from handlers.user.my_groups import router as user_groups_router
 from handlers.user.my_campaign import router as user_campaign_router
+from handlers.admin.invite_links import router as invite_links_router
 
 
 def register_all_routers(dp: Dispatcher) -> None:
@@ -46,5 +47,6 @@ def register_all_routers(dp: Dispatcher) -> None:
         admin_campaigns_router,
         admin_button_manager_router,
         admin_user_mgmt_router,
+        invite_links_router,
     )
 

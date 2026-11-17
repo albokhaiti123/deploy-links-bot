@@ -72,6 +72,7 @@ async def cb_user_leave_group_confirm(callback: types.CallbackQuery):
                 text="✅ Yes, remove bot", callback_data=f"user_leave_confirm_{chat_id}"
             ),
             types.InlineKeyboardButton(text="❌ Cancel", callback_data="user_my_groups"),
+            [types.InlineKeyboardButton(text="🔗 رابط الاحالة الخاص بي", callback_data="user_my_referral")],
         ]
     ])
     await callback.message.edit_text(

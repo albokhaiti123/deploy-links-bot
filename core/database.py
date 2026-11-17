@@ -169,6 +169,48 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_broadcast_messages_delete_at "
             "ON broadcast_messages(delete_at)"
         )
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS owner_invite_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                label TEXT,
+                link_type TEXT NOT NULL DEFAULT 'permanent',
+                expires_at TIMESTAMP,
+                status TEXT NOT NULL DEFAULT 'active',
+                clicks_count INTEGER NOT NULL DEFAULT 0,
+                joins_count INTEGER NOT NULL DEFAULT 0,
+                created_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_referral_links (
+                user_id INTEGER PRIMARY KEY,
+                ref_code TEXT UNIQUE NOT NULL,
+                referrals_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(telegram_id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS invite_join_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL,
+                source_code TEXT NOT NULL,
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, source_type, source_code)
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_owner_invite_links_code ON owner_invite_links(code)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_referral_links_code ON user_referral_links(ref_code)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_invite_join_logs_user ON invite_join_logs(user_id)"
+        )
 
         # ── Campaign tables ──────────────────────────────────────
         await db.execute("""
