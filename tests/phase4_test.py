@@ -270,7 +270,7 @@ async def test_P4_06_user_referral_join_counting_and_deduplication():
 
 
 async def test_P4_07_start_message_contains_user_referral_button():
-    """get_start_message_data includes '🔗 رابط الاحالة الخاص بي' (callback_data='user_my_referral')."""
+    """get_start_message_data includes referral button (callback_data='user_my_referral')."""
     from handlers.start import get_start_message_data
 
     _, kb = await get_start_message_data("testbot")
@@ -282,7 +282,10 @@ async def test_P4_07_start_message_contains_user_referral_button():
     ]
     cb_map = {cb_data: text for text, cb_data in buttons}
     assert "user_my_referral" in cb_map, f"Expected user_my_referral in start keyboard, got {buttons}"
-    assert "رابط الاحالة الخاص بي" in cb_map["user_my_referral"]
+    # Button label must contain either Arabic or English referral text
+    btn_text = cb_map["user_my_referral"]
+    assert "رابط" in btn_text or "Referral" in btn_text or "referral" in btn_text.lower(), \
+        f"Unexpected referral button text: {btn_text!r}"
     print("  PASS test_P4_07_start_message_contains_user_referral_button")
 
 

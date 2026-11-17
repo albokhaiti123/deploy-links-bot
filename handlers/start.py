@@ -13,12 +13,13 @@ from models.settings import get_setting
 from models.users import upsert_user
 from services.promo import get_start_message_data as _get_start_message_data_base, trigger_group_promo
 from services.campaign import show_campaign_progress
+from handlers.admin.invite_links import get_referral_btn_label
 
 router = Router(name="start")
 
 
-async def get_start_message_data(bot_username: str):
-    """Thin wrapper that injects the user referral button into the start keyboard."""
+async def get_start_message_data(bot_username: str, language_code: str | None = None):
+    """Thin wrapper that injects the user referral button (localised) into the start keyboard."""
     text, kb = await _get_start_message_data_base(bot_username)
     rows = list(kb.inline_keyboard) if kb and getattr(kb, "inline_keyboard", None) else []
     has_ref_btn = any(
@@ -27,7 +28,10 @@ async def get_start_message_data(bot_username: str):
         for btn in row
     )
     if not has_ref_btn:
-        rows.append([InlineKeyboardButton(text="🔗 رابط الاحالة الخاص بي", callback_data="user_my_referral")])
+        rows.append([InlineKeyboardButton(
+            text=get_referral_btn_label(language_code),
+            callback_data="user_my_referral",
+        )])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -79,7 +83,8 @@ async def cmd_start(message: types.Message):
         return
 
     bot_info = await bot.get_me()
-    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
+    user_lang = getattr(message.from_user, "language_code", None)
+    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME, language_code=user_lang)
     media_id = await get_setting("start_media_id")
     media_type = await get_setting("start_media_type")
 
@@ -148,7 +153,8 @@ async def cb_start_btn2_click(callback: types.CallbackQuery):
 async def cb_start_back(callback: types.CallbackQuery):
     from models.admins import is_admin as _is_admin
     bot_info = await bot.get_me()
-    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME)
+    user_lang = getattr(callback.from_user, "language_code", None)
+    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME, language_code=user_lang)
     if not await _is_admin(callback.from_user.id):
         existing_rows = kb.inline_keyboard if kb else []
         # get_start_message_data already injects referral btn; just add dashboard btn

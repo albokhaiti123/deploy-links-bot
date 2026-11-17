@@ -31,6 +31,30 @@ STATUS_LABELS = {
     "expired": "⌛️ منتهي الصلاحية",
 }
 
+# ── Referral button label translations ───────────────────────────────────────
+_REFERRAL_BTN_LABELS = {
+    "ar": "🔗 رابط الاحالة الخاص بي",
+    "en": "🔗 My Referral Link",
+    "fa": "🔗 لینک معرفی من",
+    "tr": "🔗 Referans Linklerim",
+    "fr": "🔗 Mon lien de parrainage",
+    "de": "🔗 Mein Empfehlungslink",
+    "es": "🔗 Mi enlace de referencia",
+    "ru": "🔗 Моя реферальная ссылка",
+    "id": "🔗 Link Referral Saya",
+    "hi": "🔗 मेरा रेफरल लिंक",
+    "pt": "🔗 Meu link de indicação",
+    "it": "🔗 Il mio link referral",
+    "nl": "🔗 Mijn verwijzingslink",
+    "uk": "🔗 Моє реферальне посилання",
+    "pl": "🔗 Mój link polecający",
+}
+
+def get_referral_btn_label(language_code: str | None) -> str:
+    """Return the referral button label in the user's language (falls back to English)."""
+    lang = (language_code or "en").split("-")[0].lower()
+    return _REFERRAL_BTN_LABELS.get(lang, _REFERRAL_BTN_LABELS["en"])
+
 
 async def _safe_edit_or_answer(
     message: types.Message, text: str, kb: InlineKeyboardMarkup | None = None
@@ -69,20 +93,42 @@ async def cb_user_my_referral(callback: types.CallbackQuery):
     On every click: retrieves and displays the permanent referral link immediately.
     """
     user_id = callback.from_user.id
+    lang = getattr(callback.from_user, "language_code", None)
     ref = await get_or_create_user_referral(user_id)
     bot_username = await _get_bot_username()
     ref_url = f"https://t.me/{bot_username}?start=ref_{ref['ref_code']}"
-    share_url = f"https://t.me/share/url?url={quote(ref_url)}&text={quote('انضم إلى البوت عبر رابط الإحالة الخاص بي!')}"
+
+    # Localised share text
+    _share_texts = {
+        "ar": "انضم عبر رابط الإحالة الخاص بي!",
+        "en": "Join using my referral link!",
+        "fa": "از لینک معرفی من استفاده کن!",
+        "tr": "Referans linkimle katıl!",
+        "fr": "Rejoins via mon lien de parrainage!",
+        "de": "Tritt über meinen Empfehlungslink bei!",
+        "es": "¡Únete con mi enlace de referencia!",
+        "ru": "Присоединяйся по моей реферальной ссылке!",
+    }
+    lang_key = (lang or "en").split("-")[0].lower()
+    share_text = _share_texts.get(lang_key, _share_texts["en"])
+    share_url = f"https://t.me/share/url?url={quote(ref_url)}&text={quote(share_text)}"
+
+    # Localised page labels
+    _page_labels = {
+        "ar": ("🔗 <b>رابط الإحالة الخاص بك (دائم):</b>", "👥 <b>عدد المنضمين عبر رابطك:</b>", "💡 <i>اضغط على الرابط لنسخه. يمكنك الوصول إليه دائماً عبر هذا الزر.</i>", "📤 مشاركة الرابط", "🔙 رجوع"),
+        "en": ("🔗 <b>Your permanent referral link:</b>", "👥 <b>Users joined via your link:</b>", "💡 <i>Tap the link to copy it. You can always access it from this button.</i>", "📤 Share Link", "🔙 Back"),
+    }
+    lbl = _page_labels.get(lang_key, _page_labels["en"])
 
     text = (
-        "🔗 <b>رابط الإحالة الخاص بك (دائم):</b>\n\n"
+        f"{lbl[0]}\n\n"
         f"<code>{html.escape(ref_url)}</code>\n\n"
-        f"👥 <b>عدد المنضمين عبر رابطك:</b> {ref['referrals_count']}\n\n"
-        "💡 <i>اضغط على الرابط أعلاه لنسخه، ويمكنك الوصول إليه في أي وقت عبر هذا الزر.</i>"
+        f"{lbl[1]} {ref['referrals_count']}\n\n"
+        f"{lbl[2]}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 مشاركة الرابط", url=share_url)],
-        [InlineKeyboardButton(text="🔙 رجوع", callback_data="start_back")],
+        [InlineKeyboardButton(text=lbl[3], url=share_url)],
+        [InlineKeyboardButton(text=lbl[4], callback_data="start_back")],
     ])
     await _safe_edit_or_answer(callback.message, text, kb)
     try:
@@ -132,7 +178,7 @@ async def cb_admin_invite_links(callback: types.CallbackQuery, state: FSMContext
                 )
             ])
 
-    kb_rows.append([InlineKeyboardButton(text="🔙 رجوع للوحة التحكم", callback_data="admin_back")])
+    kb_rows.append([InlineKeyboardButton(text="🔙 رجوع للوحة التحكم", callback_data="admin_main")])
     await _safe_edit_or_answer(callback.message, text, InlineKeyboardMarkup(inline_keyboard=kb_rows))
     try:
         await callback.answer()
