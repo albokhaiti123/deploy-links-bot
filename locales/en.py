@@ -276,4 +276,95 @@ STRINGS: dict[str, str] = {
         "🔄 Will post automatically every <b>{hours}h</b> to <b>{groups_count}</b> group(s)."
     ),
     "uc_launch_failed": "❌ Failed to create campaign: {error}",
+
+    # ── Phase 8: User Dashboard Pro ────────────────────────────────────────
+    # Buttons
+    "u8_btn_my_stats":     "📊 My Statistics",
+    "u8_btn_my_history":   "🗂 Campaign History",
+    "u8_btn_test_dm":      "👁 Private Test Send",
+    "u8_btn_edit_live":    "✏️ Edit Active Campaign",
+    "u8_btn_last_report":  "📊 Last Run Report",
+    "u8_btn_check_health": "🔄 Check Groups Health",
+
+    # Campaign statuses
+    "u8_status_active":           "🟢 Active",
+    "u8_status_paused":           "⏸ Paused",
+    "u8_status_running":          "🏃 Running",
+    "u8_status_completed":        "✅ Completed",
+    "u8_status_deleted":          "🗑 Deleted",
+    "u8_status_replaced":         "🔄 Replaced",
+    "u8_status_suspended_admin":  "🚫 Suspended by Admin",
+
+    # My Stats screen
+    "u8_stats_body": (
+        "📊 <b>My Statistics</b>\n\n"
+        "📢 Campaigns Created: <b>{total_campaigns}</b>\n"
+        "✅ Messages Sent: <b>{sent_ok}</b>\n"
+        "❌ Messages Failed: <b>{sent_fail}</b>\n"
+        "⏭ Messages Skipped: <b>{sent_skip}</b>\n"
+        "📈 Success Rate: <b>{success_rate}%</b>\n\n"
+        "📅 Quota Used Today: <b>{quota_today}/{quota_max}</b>\n"
+        "📱 Active Groups: <b>{active_groups}</b>\n"
+        "🔗 Referrals: <b>{referrals}</b>"
+    ),
+    "u8_stats_current_section": (
+        "\n\n──────────────────\n"
+        "📌 <b>Current Campaign</b>\n"
+        "🆔 #{cid} | Status: {status_label}\n"
+        "⏰ Type: {mode_label}\n"
+        "📋 Last Run: {last_run}\n"
+        "📋 Next Run: {next_run}"
+    ),
+    "u8_stats_no_current":  "📌 <b>No active campaign.</b>",
+    "u8_not_run_yet":       "Not run yet",
+    "u8_not_scheduled":     "Not scheduled",
+
+    # Last run report
+    "u8_report_title":    "📊 <b>Last Run Report — Campaign #{cid}</b>\n\n",
+    "u8_report_empty":    "📋 No delivery records for this campaign yet.",
+    "u8_report_row_ok":   "✅ {title}\n",
+    "u8_report_row_fail": "❌ {title} — <code>{error}</code>\n",
+    "u8_report_summary":  "\n📊 Total: ✅{ok} ❌{fail}",
+
+    # Test DM
+    "u8_test_dm_header":    "👁 <b>Private Test Send</b>\n\nA preview of your campaign will be sent to your private chat.",
+    "u8_test_dm_sent_toast": "✅ Preview sent to your private chat!",
+
+    # Errors
+    "u8_camp_not_found":    "❌ Campaign not found or not yours.",
+    "u8_edit_blocked_running": "⚠️ Cannot edit while campaign is running. Wait for the current cycle to finish.",
+    "u8_edit_failed":       "❌ Edit failed: {reason}",
+
+    # Live edit menu
+    "u8_edit_title":        "✏️ <b>Edit Active Campaign</b>\n\nChoose what to edit:",
+    "u8_edit_saved_notice": "✅ Saved! Returning to campaign...",
+    "u8_edit_btn_back_camp": "🔙 Back to Campaign",
+    "u8_edit_text_prompt":  "📝 Send the new campaign text (HTML supported):",
+    "u8_edit_photo_prompt": "📸 Send the new campaign photo:",
+    "u8_edit_btn_clear_text":  "🗑 Clear Text",
+    "u8_edit_btn_clear_photo": "🗑 Clear Photo",
+
+    # Campaign history
+    "u8_hist_title":       "🗂 <b>Last 10 Campaigns</b>\n\n",
+    "u8_hist_empty":       "📋 No campaign history yet.",
+    "u8_hist_item_btn":    "#{cid} | {status} | {date}",
+    "u8_hist_detail":      (
+        "🗂 <b>Campaign #{cid}</b>\n"
+        "Status: {status_label}\n"
+        "Created: {created_at}\n"
+        "Type: {mode_label}\n"
+        "✅{ok} ❌{fail} messages"
+    ),
+    "u8_hist_no_text":     "(no text)",
+    "u8_btn_relaunch":     "♻️ Relaunch",
+    "u8_btn_back_history": "🔙 Back to History",
+    "u8_relaunch_no_groups": "⚠️ No registered groups. Add a group first.",
+    "u8_relaunch_ready_toast": "✅ Campaign loaded. Review the preview and confirm launch.",
+
+    # Groups health
+    "u8_groups_health_summary": (
+        "📱 <b>My Groups</b> ({total} registered)\n"
+        "✅ Healthy: {ok} | 🚫 Needs Attention: {bad}\n\n"
+    ),
+    "u8_health_check_done": "✅ Checked {total} group(s). Healthy: {ok} | Needs attention: {bad}",
 }

@@ -441,3 +441,240 @@ async def get_delivery_stats(campaign_id: int) -> dict:
         ) as c:
             rows = await c.fetchall()
     return {r[0]: r[1] for r in rows}
+
+
+# ── Phase 8: Dashboard Pro analytics ─────────────────────────────────────────
+
+def extract_campaign_target_ids(campaign: dict) -> list[int]:
+    """Extract target chat_ids list from a campaign dict (supports both JSON formats)."""
+    raw = campaign.get("target_groups_json") or "[]"
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    if isinstance(data, list) and data and isinstance(data[0], int):
+        return data
+    # dict format {"ids": [...]}
+    if isinstance(data, dict):
+        return data.get("ids", [])
+    return []
+
+
+async def get_user_overall_stats(user_id: int) -> dict:
+    """Return overall performance stats for a user across all their campaigns."""
+    async with get_db() as db:
+        # Total campaigns ever created
+        async with db.execute(
+            "SELECT COUNT(*) FROM user_campaigns WHERE owner_user_id=?", (user_id,)
+        ) as c:
+            row = await c.fetchone()
+        total_campaigns = row[0] if row else 0
+
+        # Delivery counts across all campaigns owned by this user
+        async with db.execute(
+            """
+            SELECT d.status, COUNT(*)
+            FROM user_campaign_deliveries d
+            JOIN user_campaigns uc ON uc.id = d.campaign_id
+            WHERE uc.owner_user_id = ?
+            GROUP BY d.status
+            """,
+            (user_id,),
+        ) as c:
+            del_rows = await c.fetchall()
+        del_map = {r[0]: r[1] for r in del_rows}
+        sent_ok   = del_map.get("sent", 0)
+        sent_fail = del_map.get("failed", 0)
+        sent_skip = del_map.get("skipped", 0)
+        total_del = sent_ok + sent_fail + sent_skip
+        success_rate = round(sent_ok / total_del * 100) if total_del > 0 else 0
+
+        # Quota today
+        from core.config import QUOTA_TIMEZONE
+        today = datetime.now(tz=ZoneInfo(QUOTA_TIMEZONE)).date().isoformat()
+        async with db.execute(
+            "SELECT campaigns_created FROM user_campaign_quota WHERE user_id=? AND quota_date=?",
+            (user_id, today),
+        ) as c:
+            q_row = await c.fetchone()
+        quota_today = q_row[0] if q_row else 0
+
+        # Active groups owned by this user
+        async with db.execute(
+            "SELECT COUNT(*) FROM groups WHERE reward_owner_id=? AND status='active'", (user_id,)
+        ) as c:
+            g_row = await c.fetchone()
+        active_groups = g_row[0] if g_row else 0
+
+        # Referrals
+        async with db.execute(
+            "SELECT referrals_count FROM user_referral_links WHERE user_id=?", (user_id,)
+        ) as c:
+            r_row = await c.fetchone()
+        referrals = r_row[0] if r_row else 0
+
+    return {
+        "total_campaigns": total_campaigns,
+        "sent_ok":         sent_ok,
+        "sent_fail":       sent_fail,
+        "sent_skip":       sent_skip,
+        "success_rate":    success_rate,
+        "quota_today":     quota_today,
+        "quota_max":       5,
+        "active_groups":   active_groups,
+        "referrals":       referrals,
+    }
+
+
+async def get_campaign_last_run_deliveries(campaign_id: int, user_id: int) -> list[dict]:
+    """Return per-group delivery rows for the most recent run of a campaign.
+    Returns [] if campaign not found or not owned by user."""
+    async with get_db() as db:
+        # Verify ownership
+        async with db.execute(
+            "SELECT run_id FROM user_campaigns WHERE id=? AND owner_user_id=?",
+            (campaign_id, user_id),
+        ) as c:
+            row = await c.fetchone()
+        if not row or not row[0]:
+            return []
+        last_run_id = row[0]
+
+        async with db.execute(
+            """
+            SELECT d.chat_id, d.status, d.error_code,
+                   COALESCE(g.title, CAST(d.chat_id AS TEXT)) AS title
+            FROM user_campaign_deliveries d
+            LEFT JOIN groups g ON g.chat_id = d.chat_id
+            WHERE d.campaign_id=? AND d.run_id=?
+            ORDER BY d.attempted_at
+            """,
+            (campaign_id, last_run_id),
+        ) as c:
+            rows = await c.fetchall()
+    return [
+        {"chat_id": r[0], "status": r[1], "error_code": r[2], "title": r[3]}
+        for r in rows
+    ]
+
+
+async def get_user_campaign_history(user_id: int, limit: int = 10) -> list[dict]:
+    """Return the last `limit` campaigns for user with delivery summary."""
+    async with get_db() as db:
+        async with db.execute(
+            """
+            SELECT id, text, photo_file_id, mode, repeat_hours, status,
+                   created_at, run_id
+            FROM user_campaigns
+            WHERE owner_user_id=?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ) as c:
+            rows = await c.fetchall()
+
+        result = []
+        for r in rows:
+            cid, text, photo_id, mode, repeat_hours, status, created_at, run_id = r
+            # delivery summary for this campaign
+            async with db.execute(
+                "SELECT status, COUNT(*) FROM user_campaign_deliveries WHERE campaign_id=? GROUP BY status",
+                (cid,),
+            ) as dc:
+                d_rows = await dc.fetchall()
+            d_map = {dr[0]: dr[1] for dr in d_rows}
+            result.append({
+                "id":           cid,
+                "text":         text,
+                "photo_file_id": photo_id,
+                "mode":         mode,
+                "repeat_hours": repeat_hours,
+                "status":       status,
+                "created_at":   created_at,
+                "run_id":       run_id,
+                "sent_ok":      d_map.get("sent", 0),
+                "sent_fail":    d_map.get("failed", 0),
+            })
+    return result
+
+
+async def update_user_campaign_fields(
+    campaign_id: int,
+    user_id: int,
+    **updates,
+) -> tuple[bool, str]:
+    """
+    Update arbitrary fields on an active/paused/suspended_admin campaign.
+    Does NOT consume quota.
+    Returns (True, "") on success, (False, reason) on failure.
+
+    Supported kwargs: text, photo_file_id, buttons_json,
+                      target_chat_ids, mode, repeat_hours, auto_delete_seconds
+    """
+    editable_statuses = ("active", "paused", "suspended_admin")
+
+    async with get_db() as db:
+        async with db.execute(
+            "SELECT status, owner_user_id FROM user_campaigns WHERE id=?",
+            (campaign_id,),
+        ) as c:
+            row = await c.fetchone()
+
+    if not row:
+        return False, "not_found"
+    status, owner = row
+    if owner != user_id:
+        return False, "not_owner"
+    if status == "running":
+        return False, "running"
+    if status not in editable_statuses:
+        return False, "not_editable"
+
+    allowed_fields = {
+        "text", "photo_file_id", "buttons_json",
+        "target_groups_json", "mode", "repeat_hours", "auto_delete_seconds",
+    }
+    # Map caller-friendly key to DB column
+    if "target_chat_ids" in updates:
+        ids = updates.pop("target_chat_ids")
+        if not isinstance(ids, list) or not ids:
+            return False, "empty_groups"
+        # Validate ownership of groups
+        async with get_db() as db:
+            for gid in ids:
+                async with db.execute(
+                    "SELECT reward_owner_id FROM groups WHERE chat_id=?", (gid,)
+                ) as c:
+                    grow = await c.fetchone()
+                if not grow or grow[0] != user_id:
+                    return False, "group_not_owned"
+        updates["target_groups_json"] = json.dumps(ids)
+
+    if "text" in updates and updates["text"] is not None:
+        if updates["text"].strip() == "":
+            return False, "empty_text"
+
+    if "repeat_hours" in updates:
+        hours = updates["repeat_hours"]
+        if hours is not None and int(hours) < 6:
+            return False, "min_hours"
+
+    set_parts = []
+    values = []
+    for key, val in updates.items():
+        if key not in allowed_fields:
+            return False, f"unknown_field:{key}"
+        set_parts.append(f"{key}=?")
+        values.append(val)
+
+    if not set_parts:
+        return False, "no_fields"
+
+    values.append(campaign_id)
+    sql = f"UPDATE user_campaigns SET {', '.join(set_parts)} WHERE id=?"
+    async with get_db() as db:
+        await db.execute(sql, values)
+        await db.commit()
+
+    return True, ""

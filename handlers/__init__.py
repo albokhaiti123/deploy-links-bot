@@ -22,6 +22,7 @@ from handlers.admin.button_manager import router as admin_button_manager_router
 from handlers.admin.user_management import router as admin_user_mgmt_router
 from handlers.user.my_groups import router as user_groups_router
 from handlers.user.my_campaign import router as user_campaign_router
+from handlers.user.dashboard_pro import router as dashboard_pro_router
 from handlers.admin.invite_links import router as invite_links_router
 from handlers.language import router as language_router
 from core.i18n import LanguageMiddleware
@@ -43,6 +44,7 @@ def register_all_routers(dp: Dispatcher) -> None:
         # User feature handlers
         user_groups_router,
         user_campaign_router,
+        dashboard_pro_router,
         # Admin handlers
         admin_panel_router,
         admin_promo_router,

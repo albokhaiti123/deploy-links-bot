@@ -275,4 +275,95 @@ STRINGS: dict[str, str] = {
         "🔄 سيتم النشر تلقائياً كل <b>{hours}</b> ساعة في <b>{groups_count}</b> مجموعة."
     ),
     "uc_launch_failed": "❌ تعذر إنشاء الحملة: {error}",
+
+    # ── Phase 8: User Dashboard Pro ────────────────────────────────────────
+    # Buttons
+    "u8_btn_my_stats":     "📊 إحصائياتي",
+    "u8_btn_my_history":   "🗂 سجل الحملات",
+    "u8_btn_test_dm":      "👁 اختبار خاص",
+    "u8_btn_edit_live":    "✏️ تعديل الحملة الحالية",
+    "u8_btn_last_report":  "📊 تقرير آخر إرسال",
+    "u8_btn_check_health": "🔄 فحص صحة المجموعات",
+
+    # Campaign statuses
+    "u8_status_active":           "🟢 نشطة",
+    "u8_status_paused":           "⏸ متوقفة",
+    "u8_status_running":          "🏃 تعمل الآن",
+    "u8_status_completed":        "✅ مكتملة",
+    "u8_status_deleted":          "🗑 محذوفة",
+    "u8_status_replaced":         "🔄 مستبدلة",
+    "u8_status_suspended_admin":  "🚫 موقوفة من الإدارة",
+
+    # My Stats screen
+    "u8_stats_body": (
+        "📊 <b>إحصائياتي الشاملة</b>\n\n"
+        "📢 الحملات المُنشأة: <b>{total_campaigns}</b>\n"
+        "✅ رسائل أُرسلت: <b>{sent_ok}</b>\n"
+        "❌ رسائل فاشلة: <b>{sent_fail}</b>\n"
+        "⏭ رسائل متخطاة: <b>{sent_skip}</b>\n"
+        "📈 معدل النجاح: <b>{success_rate}%</b>\n\n"
+        "📅 الحصة المستهلكة اليوم: <b>{quota_today}/{quota_max}</b>\n"
+        "📱 المجموعات النشطة: <b>{active_groups}</b>\n"
+        "🔗 الإحالات: <b>{referrals}</b>"
+    ),
+    "u8_stats_current_section": (
+        "\n\n──────────────────\n"
+        "📌 <b>حملتك الحالية</b>\n"
+        "🆔 #{cid} | الحالة: {status_label}\n"
+        "⏰ النوع: {mode_label}\n"
+        "📋 آخر تشغيل: {last_run}\n"
+        "📋 التشغيل التالي: {next_run}"
+    ),
+    "u8_stats_no_current":  "📌 <b>لا توجد حملة حالية.</b>",
+    "u8_not_run_yet":       "لم تُشغَّل بعد",
+    "u8_not_scheduled":     "غير مجدولة",
+
+    # Last run report
+    "u8_report_title":   "📊 <b>تقرير آخر إرسال — الحملة #{cid}</b>\n\n",
+    "u8_report_empty":   "📋 لا يوجد سجل إرسال لهذه الحملة بعد.",
+    "u8_report_row_ok":  "✅ {title}\n",
+    "u8_report_row_fail": "❌ {title} — <code>{error}</code>\n",
+    "u8_report_summary": "\n📊 الإجمالي: ✅{ok} ❌{fail}",
+
+    # Test DM
+    "u8_test_dm_header":    "👁 <b>إرسال اختبار خاص</b>\n\nسيتم إرسال معاينة حملتك إلى محادثتك الخاصة.",
+    "u8_test_dm_sent_toast": "✅ تم إرسال المعاينة إلى خاصيتك!",
+
+    # Errors
+    "u8_camp_not_found":    "❌ الحملة غير موجودة أو ليست ملكك.",
+    "u8_edit_blocked_running": "⚠️ لا يمكن التعديل أثناء تشغيل الحملة. انتظر حتى تنتهي الدورة الحالية.",
+    "u8_edit_failed":       "❌ فشل التعديل: {reason}",
+
+    # Live edit menu
+    "u8_edit_title":        "✏️ <b>تعديل الحملة الحالية</b>\n\nاختر الجزء الذي تريد تعديله:",
+    "u8_edit_saved_notice": "✅ تم الحفظ! العودة للحملة...",
+    "u8_edit_btn_back_camp": "🔙 العودة للحملة",
+    "u8_edit_text_prompt":  "📝 أرسل النص الجديد للحملة (HTML مدعوم):",
+    "u8_edit_photo_prompt": "📸 أرسل الصورة الجديدة للحملة:",
+    "u8_edit_btn_clear_text":  "🗑 مسح النص",
+    "u8_edit_btn_clear_photo": "🗑 مسح الصورة",
+
+    # Campaign history
+    "u8_hist_title":       "🗂 <b>سجل آخر 10 حملات</b>\n\n",
+    "u8_hist_empty":       "📋 لا يوجد سجل حملات بعد.",
+    "u8_hist_item_btn":    "#{cid} | {status} | {date}",
+    "u8_hist_detail":      (
+        "🗂 <b>حملة #{cid}</b>\n"
+        "الحالة: {status_label}\n"
+        "تاريخ الإنشاء: {created_at}\n"
+        "النوع: {mode_label}\n"
+        "✅{ok} ❌{fail} رسالة"
+    ),
+    "u8_hist_no_text":     "(بدون نص)",
+    "u8_btn_relaunch":     "♻️ إعادة إطلاق",
+    "u8_btn_back_history": "🔙 العودة للسجل",
+    "u8_relaunch_no_groups": "⚠️ لا توجد مجموعات مسجلة. أضف مجموعة أولاً.",
+    "u8_relaunch_ready_toast": "✅ تم تحميل الحملة. راجع المعاينة وأكد الإطلاق.",
+
+    # Groups health
+    "u8_groups_health_summary": (
+        "📱 <b>مجموعاتي</b> ({total} مسجلة)\n"
+        "✅ سليمة: {ok} | 🚫 تحتاج مراجعة: {bad}\n\n"
+    ),
+    "u8_health_check_done": "✅ تم فحص {total} مجموعة. سليمة: {ok} | تحتاج مراجعة: {bad}",
 }

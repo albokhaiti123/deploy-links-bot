@@ -9,6 +9,7 @@ from aiogram import Router, F, types
 from aiogram.enums import ParseMode
 
 from core.config import ADMIN_ID
+from core.i18n import t, get_lang
 from models.groups import get_user_active_groups
 from services.group_manager import leave_group
 
@@ -28,6 +29,7 @@ HEALTH_ICONS = {
 @router.callback_query(F.data == "user_my_groups")
 async def cb_user_my_groups(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    lang = get_lang(user_id)
     if user_id == ADMIN_ID:
         await callback.answer("Use /admin for owner group management.", show_alert=True)
         return
@@ -46,13 +48,21 @@ async def cb_user_my_groups(callback: types.CallbackQuery):
         await callback.answer()
         return
 
-    text = f"📱 <b>My Groups</b> ({len(groups)} registered)\n\n"
+    # Phase 8: health summary header
+    ok_count  = sum(1 for _, _, h in groups if (h or "unknown") == "ok")
+    bad_count = len(groups) - ok_count
+    text = t("u8_groups_health_summary", lang).format(
+        total=len(groups), ok=ok_count, bad=bad_count
+    )
     for chat_id, title, health in groups:
         icon = HEALTH_ICONS.get(health or "unknown", "❓")
         label = html.escape((title or f"Group {chat_id}")[:30])
         text += f"{icon} <b>{label}</b>\n"
 
-    buttons = [[types.InlineKeyboardButton(text="🔙 Back", callback_data="user_menu")]]
+    buttons = [
+        [types.InlineKeyboardButton(text=t("u8_btn_check_health", lang), callback_data="user_check_groups_health")],
+        [types.InlineKeyboardButton(text="🔙 Back", callback_data="user_menu")],
+    ]
     kb = types.InlineKeyboardMarkup(inline_keyboard=buttons)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
     await callback.answer()
@@ -100,3 +110,4 @@ async def cb_user_leave_confirm(callback: types.CallbackQuery):
         await callback.answer()
     except Exception:
         pass
+

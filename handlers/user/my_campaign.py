@@ -219,6 +219,14 @@ async def cb_user_view_campaign(callback: types.CallbackQuery):
     if current["status"] == "active" and current["mode"] == "immediate":
         buttons.append([types.InlineKeyboardButton(text="📢 Send Now", callback_data=f"user_send_now_{current['id']}")])
 
+    # Phase 8 Pro buttons
+    cid_p8 = current["id"]
+    buttons.append([
+        types.InlineKeyboardButton(text="👁 Test DM",         callback_data=f"user_test_campaign_{cid_p8}"),
+        types.InlineKeyboardButton(text="📊 Last Report",     callback_data=f"user_camp_report_{cid_p8}"),
+    ])
+    if current["status"] in ("active", "paused", "suspended_admin"):
+        buttons.append([types.InlineKeyboardButton(text="✏️ Live Edit", callback_data=f"user_edit_live_camp_{cid_p8}")])
     buttons.append([types.InlineKeyboardButton(text="🗑 Delete Campaign", callback_data=f"user_delete_campaign_{current['id']}")])
     buttons.append([types.InlineKeyboardButton(text="🔙 Back", callback_data="user_menu")])
 
