@@ -249,7 +249,11 @@ async def execute_campaign_broadcast(
     """Broadcast a campaign promo to users/groups/all."""
     campaign = await get_campaign(campaign_id)
     if not campaign:
-        await status_msg.edit_text("❌ الحملة غير موجودة.")
+        # Phase 6: Localized
+        from core.i18n import get_lang as _get_lang, t as _t
+        _cid = getattr(getattr(status_msg, "chat", None), "id", None)
+        _lang = await _get_lang(_cid if isinstance(_cid, int) and _cid > 0 else None)
+        await status_msg.edit_text(_t("admin_camp_not_found", _lang))
         return
 
     bot_info = await bot.get_me()
@@ -302,8 +306,12 @@ async def execute_campaign_broadcast(
             logger.warning(f"Campaign {campaign_id} broadcast failed for {chat_id}: {e}")
         await asyncio.sleep(0.05)
 
+    # Phase 6: Localized campaign broadcast completion
+    from core.i18n import get_lang as _get_lang, t as _t
+    _cid = getattr(getattr(status_msg, "chat", None), "id", None)
+    _lang = await _get_lang(_cid if isinstance(_cid, int) and _cid > 0 else None)
     await status_msg.edit_text(
-        f"✅ اكتمل نشر الحملة! تم الإرسال إلى <b>{success}</b> جهة.",
+        _t("admin_camp_bcast_done", _lang, success=success),
         parse_mode=ParseMode.HTML,
     )
 

@@ -85,6 +85,10 @@ async def main():
     register_all_routers(dp)
     logger.info("All routers registered.")
 
+    # Phase 6: Admin session i18n middleware
+    from core.admin_i18n import AdminSessionI18nMiddleware
+    bot.session.middleware.register(AdminSessionI18nMiddleware())
+
 
     # 5. Start background tasks
     asyncio.create_task(auto_delete_broadcasts())

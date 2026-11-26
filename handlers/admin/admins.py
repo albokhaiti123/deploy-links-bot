@@ -56,27 +56,33 @@ async def cb_admin_remove_admin(callback: types.CallbackQuery, state: FSMContext
 
 @router.message(AdminEdit.waiting_for_admin_id)
 async def process_admin_id(message: types.Message, state: FSMContext):
+    from core.i18n import get_lang, t
+    user_obj = getattr(message, "from_user", None)
+    uid = getattr(user_obj, "id", None)
+    tg_code = getattr(user_obj, "language_code", None)
+    lang = await get_lang(uid if isinstance(uid, int) else None, tg_code)
+
     if not message.text:
-        await message.answer("❌ يرجى إرسال معرف رقمي صالح.\nحاول مجدداً أو أرسل /cancel")
+        await message.answer(t("admin_id_invalid", lang))
         return
     if message.text == "/cancel":
-        await message.answer("❌ تم الإلغاء.")
+        await message.answer(t("admin_cancelled", lang))
         await state.clear()
         return
     if not message.text.strip().isdigit():
-        await message.answer("❌ يرجى إرسال معرف رقمي صالح.\nحاول مجدداً أو أرسل /cancel")
+        await message.answer(t("admin_id_invalid", lang))
         return
     tid = int(message.text.strip())
     if tid == ADMIN_ID:
-        await message.answer("⛔️ لا يمكنك تعديل صلاحيات المالك الرئيسي.")
+        await message.answer(t("admin_owner_protected", lang))
         await state.clear()
         return
     data = await state.get_data()
     action = data.get("admin_action")
     if action == "add":
         await add_admin(tid)
-        await message.answer(f"✅ تم إضافة المشرف <code>{tid}</code> بنجاح.", parse_mode=ParseMode.HTML)
+        await message.answer(t("admin_added_success", lang, tid=tid), parse_mode=ParseMode.HTML)
     elif action == "remove":
         await remove_admin(tid)
-        await message.answer(f"✅ تم إزالة المشرف <code>{tid}</code>.", parse_mode=ParseMode.HTML)
+        await message.answer(t("admin_removed_success", lang, tid=tid), parse_mode=ParseMode.HTML)
     await state.clear()

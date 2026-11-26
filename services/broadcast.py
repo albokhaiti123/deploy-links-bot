@@ -81,7 +81,14 @@ async def execute_broadcast(data: dict, status_msg: types.Message) -> None:
 
         await asyncio.sleep(0.05)  # Flood protection
 
-    await status_msg.edit_text(f"✅ اكتملت المهمة! تمت الإذاعة بنجاح إلى {success} جهة.")
+    # Phase 6: Localized completion report
+    from core.i18n import get_lang as _get_lang, t as _t
+    _chat_id = getattr(getattr(status_msg, "chat", None), "id", None)
+    _lang = await _get_lang(_chat_id if isinstance(_chat_id, int) and _chat_id > 0 else None)
+    await status_msg.edit_text(
+        _t("admin_bcast_done", _lang, success=success),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def execute_recurring_broadcast_cycle(
