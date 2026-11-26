@@ -1,5 +1,6 @@
 """
 Handler registration — collects all routers and includes them into the dispatcher.
+Phase 5: Added LanguageMiddleware and language_router.
 """
 
 from aiogram import Dispatcher
@@ -22,11 +23,18 @@ from handlers.admin.user_management import router as admin_user_mgmt_router
 from handlers.user.my_groups import router as user_groups_router
 from handlers.user.my_campaign import router as user_campaign_router
 from handlers.admin.invite_links import router as invite_links_router
+from handlers.language import router as language_router
+from core.i18n import LanguageMiddleware
 
 
 def register_all_routers(dp: Dispatcher) -> None:
     """Register all handler routers with the dispatcher."""
+    # Phase 5: register language middleware globally
+    dp.update.middleware(LanguageMiddleware())
+
     dp.include_routers(
+        # Language switcher — register first so /lang is always available
+        language_router,
         # Core user handlers
         start_router,
         payments_router,

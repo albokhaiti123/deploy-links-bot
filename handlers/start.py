@@ -10,10 +10,11 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from core.bot import bot
 from core.config import BOT_USERNAME
 from models.settings import get_setting
-from models.users import upsert_user
+from models.users import upsert_user, ensure_user_lang
 from services.promo import get_start_message_data as _get_start_message_data_base, trigger_group_promo
 from services.campaign import show_campaign_progress
 from handlers.admin.invite_links import get_referral_btn_label
+from core.i18n import t as i18n_t, resolve_lang
 
 router = Router(name="start")
 
@@ -28,8 +29,11 @@ async def get_start_message_data(bot_username: str, language_code: str | None = 
         for btn in row
     )
     if not has_ref_btn:
+        # Phase 5: use i18n translation for referral button label
+        lang = resolve_lang(language_code)
+        label = i18n_t("btn_my_referral", lang)
         rows.append([InlineKeyboardButton(
-            text=get_referral_btn_label(language_code),
+            text=label,
             callback_data="user_my_referral",
         )])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
@@ -46,6 +50,9 @@ async def cmd_start(message: types.Message):
         message.from_user.username,
         message.from_user.first_name,
     )
+    # Phase 5: auto-detect and persist language on first /start
+    user_lang = getattr(message.from_user, "language_code", None)
+    await ensure_user_lang(message.from_user.id, user_lang)
 
     # Campaign deep link: /start camp_123
     parts = message.text.split()

@@ -1,5 +1,6 @@
 """
 Users model — CRUD for the `users` table.
+Phase 5: Added lang column helpers (get_user_lang, set_user_lang, ensure_user_lang).
 """
 
 from datetime import datetime, timedelta
@@ -43,3 +44,49 @@ async def get_users_since(since: str | datetime | None = None, hours: int = 24) 
             (cutoff,),
         ) as cursor:
             return (await cursor.fetchone())[0]
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Language helpers
+# ---------------------------------------------------------------------------
+
+async def get_user_lang(telegram_id: int) -> str | None:
+    """Return the stored language code for a user, or None if not set."""
+    async with get_db() as db:
+        try:
+            async with db.execute(
+                "SELECT lang FROM users WHERE telegram_id = ?", (telegram_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+        except Exception:
+            return None
+
+
+async def set_user_lang(telegram_id: int, lang: str) -> None:
+    """Persist the language preference for a user."""
+    async with get_db() as db:
+        try:
+            await db.execute(
+                "UPDATE users SET lang = ? WHERE telegram_id = ?", (lang, telegram_id)
+            )
+            await db.commit()
+        except Exception:
+            pass
+
+
+async def ensure_user_lang(telegram_id: int, language_code: str | None) -> str:
+    """
+    Ensure a user has a lang value in the DB.
+    If lang column is NULL (not yet detected), auto-detect from language_code and persist.
+    Returns the resolved lang ('ar' or 'en').
+    """
+    from core.i18n import resolve_lang
+    existing = await get_user_lang(telegram_id)
+    if existing is not None:
+        # Already explicitly set — preserve it
+        return existing
+    # NULL means first time — auto-detect and persist
+    lang = resolve_lang(language_code)
+    await set_user_lang(telegram_id, lang)
+    return lang

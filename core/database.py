@@ -128,6 +128,8 @@ async def init_db() -> None:
                 created_at TIMESTAMP
             )
         """)
+        # Phase 5 migration — add lang column if not present (NULL = not yet detected)
+        await _try_add_column(db, "users", "lang", "TEXT")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS settings (
