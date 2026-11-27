@@ -92,7 +92,7 @@ def _build_edit_menu_kb(cid: int, lang: str) -> types.InlineKeyboardMarkup:
 
 @router.callback_query(F.data == "user_my_stats")
 async def cb_my_stats(call: types.CallbackQuery):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     stats = await get_user_overall_stats(call.from_user.id)
     text = t("u8_stats_body", lang).format(**stats)
 
@@ -116,7 +116,7 @@ async def cb_my_stats(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("user_camp_report_"))
 async def cb_last_report(call: types.CallbackQuery):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
 
     rows = await get_campaign_last_run_deliveries(cid, call.from_user.id)
@@ -148,7 +148,7 @@ async def cb_last_report(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("user_test_campaign_"))
 async def cb_test_dm(call: types.CallbackQuery, bot: Bot):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
 
     camp = await get_current_campaign(call.from_user.id)
@@ -201,7 +201,7 @@ async def cb_test_dm(call: types.CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data.startswith("user_edit_live_camp_"))
 async def cb_edit_live_open(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
 
     camp = await get_current_campaign(call.from_user.id)
@@ -226,7 +226,7 @@ async def cb_edit_live_open(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_edit_text_"))
 async def cb_edit_text_prompt(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[
         types.InlineKeyboardButton(text=t("u8_edit_btn_clear_text", lang), callback_data="u8_clear_text"),
         types.InlineKeyboardButton(text=t("btn_back", lang), callback_data="u8_back_edit_menu"),
@@ -238,7 +238,7 @@ async def cb_edit_text_prompt(call: types.CallbackQuery, state: FSMContext):
 
 @router.message(UserCampaignEdit.text)
 async def handle_edit_text(message: types.Message, state: FSMContext):
-    lang = get_lang(message.from_user.id)
+    lang = await get_lang(message.from_user.id)
     data = await state.get_data()
     cid = data["edit_cid"]
     new_text = message.text or message.caption or ""
@@ -258,7 +258,7 @@ async def handle_edit_text(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "u8_clear_text")
 async def cb_clear_text(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     data = await state.get_data()
     cid = data["edit_cid"]
     ok, reason = await update_user_campaign_fields(cid, call.from_user.id, text=None)
@@ -278,7 +278,7 @@ async def cb_clear_text(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_edit_photo_"))
 async def cb_edit_photo_prompt(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     kb = types.InlineKeyboardMarkup(inline_keyboard=[[
         types.InlineKeyboardButton(text=t("u8_edit_btn_clear_photo", lang), callback_data="u8_clear_photo"),
         types.InlineKeyboardButton(text=t("btn_back", lang), callback_data="u8_back_edit_menu"),
@@ -290,7 +290,7 @@ async def cb_edit_photo_prompt(call: types.CallbackQuery, state: FSMContext):
 
 @router.message(UserCampaignEdit.photo, F.photo)
 async def handle_edit_photo(message: types.Message, state: FSMContext):
-    lang = get_lang(message.from_user.id)
+    lang = await get_lang(message.from_user.id)
     data = await state.get_data()
     cid = data["edit_cid"]
     file_id = message.photo[-1].file_id
@@ -309,7 +309,7 @@ async def handle_edit_photo(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "u8_clear_photo")
 async def cb_clear_photo(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     data = await state.get_data()
     cid = data["edit_cid"]
     ok, reason = await update_user_campaign_fields(cid, call.from_user.id, photo_file_id=None)
@@ -329,7 +329,7 @@ async def cb_clear_photo(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_edit_buttons_"))
 async def cb_edit_buttons_start(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
     await state.update_data(edit_cid=cid, edit_buttons=[])
     await state.set_state(UserCampaignEdit.button_label)
@@ -345,7 +345,7 @@ async def cb_edit_buttons_start(call: types.CallbackQuery, state: FSMContext):
 
 @router.message(UserCampaignEdit.button_label)
 async def handle_edit_button_label(message: types.Message, state: FSMContext):
-    lang = get_lang(message.from_user.id)
+    lang = await get_lang(message.from_user.id)
     label = message.text.strip() if message.text else ""
     if not label:
         await message.answer("❌ Label cannot be empty.")
@@ -357,7 +357,7 @@ async def handle_edit_button_label(message: types.Message, state: FSMContext):
 
 @router.message(UserCampaignEdit.button_url)
 async def handle_edit_button_url(message: types.Message, state: FSMContext):
-    lang = get_lang(message.from_user.id)
+    lang = await get_lang(message.from_user.id)
     url = message.text.strip() if message.text else ""
     if not url.startswith(("http://", "https://", "tg://")):
         await message.answer(t("uc_btn_url_invalid", lang))
@@ -403,7 +403,7 @@ async def handle_edit_button_url(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_add_btn_"))
 async def cb_add_another_button(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     await state.set_state(UserCampaignEdit.button_label)
     await call.message.edit_text(t("uc_step3a_label_prompt", lang))
     await call.answer()
@@ -411,7 +411,7 @@ async def cb_add_another_button(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_done_buttons_"))
 async def cb_done_buttons(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     data = await state.get_data()
     cid = data["edit_cid"]
     buttons = data.get("edit_buttons", [])
@@ -434,7 +434,7 @@ async def cb_done_buttons(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_skip_buttons_"))
 async def cb_skip_buttons(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     data = await state.get_data()
     cid = data["edit_cid"]
     ok, reason = await update_user_campaign_fields(cid, call.from_user.id, buttons_json=None)
@@ -454,7 +454,7 @@ async def cb_skip_buttons(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_edit_groups_"))
 async def cb_edit_groups_prompt(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
     groups = await get_user_active_groups(call.from_user.id)
     if not groups:
@@ -520,7 +520,7 @@ async def cb_grp_none(call: types.CallbackQuery, state: FSMContext):
 
 
 async def _refresh_group_kb(call: types.CallbackQuery, state: FSMContext, cid: int):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     data = await state.get_data()
     selected = set(data.get("grp_selected", []))
     groups = await get_user_active_groups(call.from_user.id)
@@ -543,7 +543,7 @@ async def _refresh_group_kb(call: types.CallbackQuery, state: FSMContext, cid: i
 
 @router.callback_query(F.data.startswith("u8_grp_confirm_"))
 async def cb_grp_confirm(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
     data = await state.get_data()
     selected = data.get("grp_selected", [])
@@ -567,7 +567,7 @@ async def cb_grp_confirm(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_edit_mode_"))
 async def cb_edit_mode_prompt(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text=t("uc_btn_immediate", lang), callback_data=f"u8_mode_imm_{cid}")],
@@ -587,7 +587,7 @@ async def cb_edit_mode_prompt(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_mode_imm_"))
 async def cb_mode_immediate(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
     ok, reason = await update_user_campaign_fields(cid, call.from_user.id, mode="immediate", repeat_hours=None)
     if ok:
@@ -600,7 +600,7 @@ async def cb_mode_immediate(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_mode_rec_"))
 async def cb_mode_recurring(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     parts = call.data.split("_")
     hours = int(parts[3])
     cid = int(parts[4])
@@ -615,7 +615,7 @@ async def cb_mode_recurring(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_edit_autodel_"))
 async def cb_edit_autodel_prompt(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -634,7 +634,7 @@ async def cb_edit_autodel_prompt(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("u8_autodel_"))
 async def cb_autodel_pick(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     parts = call.data.split("_")
     secs = int(parts[2])
     cid = int(parts[3])
@@ -649,7 +649,7 @@ async def cb_autodel_pick(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "u8_back_edit_menu")
 async def cb_back_edit_menu(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     data = await state.get_data()
     cid = data.get("edit_cid", 0)
     await state.set_state(UserCampaignEdit.menu)
@@ -661,7 +661,7 @@ async def cb_back_edit_menu(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "user_campaign_history")
 async def cb_campaign_history(call: types.CallbackQuery):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     history = await get_user_campaign_history(call.from_user.id, limit=10)
     if not history:
         await call.answer(t("u8_hist_empty", lang), show_alert=True)
@@ -688,7 +688,7 @@ async def cb_campaign_history(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("u8_hist_detail_"))
 async def cb_hist_detail(call: types.CallbackQuery):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
     history = await get_user_campaign_history(call.from_user.id, limit=10)
     camp = next((c for c in history if c["id"] == cid), None)
@@ -716,7 +716,7 @@ async def cb_hist_detail(call: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("user_relaunch_camp_"))
 async def cb_relaunch(call: types.CallbackQuery, state: FSMContext):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     cid = int(call.data.split("_")[-1])
     history = await get_user_campaign_history(call.from_user.id, limit=10)
     camp = next((c for c in history if c["id"] == cid), None)
@@ -765,7 +765,7 @@ async def cb_relaunch(call: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "user_check_groups_health")
 async def cb_check_groups_health(call: types.CallbackQuery, bot: Bot):
-    lang = get_lang(call.from_user.id)
+    lang = await get_lang(call.from_user.id)
     await call.answer()
 
     groups = await get_user_active_groups(call.from_user.id)

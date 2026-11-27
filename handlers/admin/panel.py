@@ -9,6 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from core.config import ADMIN_ID
+from core.i18n import get_lang, t as i18n_t
 from models.admins import is_admin
 from models.settings import get_setting, set_setting
 
@@ -16,25 +17,46 @@ router = Router(name="admin_panel")
 
 
 def get_admin_keyboard(promo_enabled: str, user_id: int,
-                        user_campaigns_enabled: str = "true") -> InlineKeyboardMarkup:
-    toggle_text = "⏸️ إيقاف الترويج" if promo_enabled == "true" else "▶️ تشغيل الترويج"
-    keyboard = [
-        [InlineKeyboardButton(text="📢 إعداد الترويج", callback_data="admin_promo_settings")],
-        [InlineKeyboardButton(text="👥 المجموعات", callback_data="admin_groups"),
-         InlineKeyboardButton(text="📊 الإحصائيات", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="admin_settings")],
-        [InlineKeyboardButton(text="📣 ساحر الإذاعة (جديد ⭐️)", callback_data="admin_broadcast_menu")],
-        [InlineKeyboardButton(text="🎯 الحملات الترويجية", callback_data="cmp_menu")],
-        [InlineKeyboardButton(text=toggle_text, callback_data="admin_toggle_promo")],
-    ]
-    if user_id == ADMIN_ID:
-        keyboard.insert(4, [InlineKeyboardButton(text="👑 إدارة المشرفين", callback_data="admin_manage_admins")])
-        # Owner-only: user campaigns control
-        uc_icon = "🟢" if user_campaigns_enabled == "true" else "🔴"
-        uc_label = f"{uc_icon} حملات المستخدمين: {'مفعّلة' if user_campaigns_enabled == 'true' else 'معطّلة'}"
-        keyboard.append([InlineKeyboardButton(text=uc_label, callback_data="admin_toggle_user_campaigns")])
-        keyboard.append([InlineKeyboardButton(text="🔗 روابط دعوة البوت", callback_data="admin_invite_links")])
-        keyboard.append([InlineKeyboardButton(text="🌐 جميع المجموعات", callback_data="admin_all_groups")])
+                        user_campaigns_enabled: str = "true",
+                        lang: str = "ar") -> InlineKeyboardMarkup:
+    if lang == "en":
+        toggle_text = "⏸️ Stop Promo" if promo_enabled == "true" else "▶️ Start Promo"
+        keyboard = [
+            [InlineKeyboardButton(text="📢 Promo Settings", callback_data="admin_promo_settings")],
+            [InlineKeyboardButton(text="👥 Groups", callback_data="admin_groups"),
+             InlineKeyboardButton(text="📊 Statistics", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="⚙️ Settings", callback_data="admin_settings")],
+            [InlineKeyboardButton(text="📣 Broadcast Wizard ⭐️", callback_data="admin_broadcast_menu")],
+            [InlineKeyboardButton(text="🎯 Promo Campaigns", callback_data="cmp_menu")],
+            [InlineKeyboardButton(text=toggle_text, callback_data="admin_toggle_promo")],
+            [InlineKeyboardButton(text="🌐 اللغة / Language", callback_data="lang_menu_admin")],
+        ]
+        if user_id == ADMIN_ID:
+            keyboard.insert(4, [InlineKeyboardButton(text="👑 Manage Admins", callback_data="admin_manage_admins")])
+            uc_icon = "🟢" if user_campaigns_enabled == "true" else "🔴"
+            uc_label = f"{uc_icon} User Campaigns: {'Enabled' if user_campaigns_enabled == 'true' else 'Disabled'}"
+            keyboard.append([InlineKeyboardButton(text=uc_label, callback_data="admin_toggle_user_campaigns")])
+            keyboard.append([InlineKeyboardButton(text="🔗 Bot Invite Links", callback_data="admin_invite_links")])
+            keyboard.append([InlineKeyboardButton(text="🌐 All Groups", callback_data="admin_all_groups")])
+    else:
+        toggle_text = "⏸️ إيقاف الترويج" if promo_enabled == "true" else "▶️ تشغيل الترويج"
+        keyboard = [
+            [InlineKeyboardButton(text="📢 إعداد الترويج", callback_data="admin_promo_settings")],
+            [InlineKeyboardButton(text="👥 المجموعات", callback_data="admin_groups"),
+             InlineKeyboardButton(text="📊 الإحصائيات", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="⚙️ الإعدادات", callback_data="admin_settings")],
+            [InlineKeyboardButton(text="📣 ساحر الإذاعة (جديد ⭐️)", callback_data="admin_broadcast_menu")],
+            [InlineKeyboardButton(text="🎯 الحملات الترويجية", callback_data="cmp_menu")],
+            [InlineKeyboardButton(text=toggle_text, callback_data="admin_toggle_promo")],
+            [InlineKeyboardButton(text="🌐 اللغة / Language", callback_data="lang_menu_admin")],
+        ]
+        if user_id == ADMIN_ID:
+            keyboard.insert(4, [InlineKeyboardButton(text="👑 إدارة المشرفين", callback_data="admin_manage_admins")])
+            uc_icon = "🟢" if user_campaigns_enabled == "true" else "🔴"
+            uc_label = f"{uc_icon} حملات المستخدمين: {'مفعّلة' if user_campaigns_enabled == 'true' else 'معطّلة'}"
+            keyboard.append([InlineKeyboardButton(text=uc_label, callback_data="admin_toggle_user_campaigns")])
+            keyboard.append([InlineKeyboardButton(text="🔗 روابط دعوة البوت", callback_data="admin_invite_links")])
+            keyboard.append([InlineKeyboardButton(text="🌐 جميع المجموعات", callback_data="admin_all_groups")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -44,12 +66,16 @@ async def cmd_admin(message: types.Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         return
     await state.clear()
+    lang = await get_lang(message.from_user.id)
     promo_enabled = await get_setting("promo_enabled")
     uc_enabled = await get_setting("user_campaigns_enabled")
-    text = "━━━━━━━━━━━━━━\n⚙️ <b>لوحة التحكم</b>\n━━━━━━━━━━━━━━"
+    if lang == "en":
+        text = "━━━━━━━━━━━━━━\n⚙️ <b>Control Panel</b>\n━━━━━━━━━━━━━━"
+    else:
+        text = "━━━━━━━━━━━━━━\n⚙️ <b>لوحة التحكم</b>\n━━━━━━━━━━━━━━"
     await message.answer(
         text,
-        reply_markup=get_admin_keyboard(promo_enabled, message.from_user.id, uc_enabled),
+        reply_markup=get_admin_keyboard(promo_enabled, message.from_user.id, uc_enabled, lang),
         parse_mode=ParseMode.HTML,
     )
 
@@ -59,12 +85,16 @@ async def cb_admin_main(callback: types.CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id):
         return
     await state.clear()
+    lang = await get_lang(callback.from_user.id)
     promo_enabled = await get_setting("promo_enabled")
     uc_enabled = await get_setting("user_campaigns_enabled")
-    text = "━━━━━━━━━━━━━━\n⚙️ <b>لوحة التحكم</b>\n━━━━━━━━━━━━━━"
+    if lang == "en":
+        text = "━━━━━━━━━━━━━━\n⚙️ <b>Control Panel</b>\n━━━━━━━━━━━━━━"
+    else:
+        text = "━━━━━━━━━━━━━━\n⚙️ <b>لوحة التحكم</b>\n━━━━━━━━━━━━━━"
     await callback.message.edit_text(
         text,
-        reply_markup=get_admin_keyboard(promo_enabled, callback.from_user.id, uc_enabled),
+        reply_markup=get_admin_keyboard(promo_enabled, callback.from_user.id, uc_enabled, lang),
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()

@@ -9,33 +9,51 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from core.bot import bot
 from core.config import BOT_USERNAME
+from core.i18n import t as i18n_t, resolve_lang, get_lang
 from models.settings import get_setting
 from models.users import upsert_user, ensure_user_lang
 from services.promo import get_start_message_data as _get_start_message_data_base, trigger_group_promo
 from services.campaign import show_campaign_progress
 from handlers.admin.invite_links import get_referral_btn_label
-from core.i18n import t as i18n_t, resolve_lang
 
 router = Router(name="start")
 
 
-async def get_start_message_data(bot_username: str, language_code: str | None = None):
+async def get_start_message_data(bot_username: str, language_code: str | None = None, user_id: int | None = None):
     """Thin wrapper that injects the user referral button (localised) into the start keyboard."""
     text, kb = await _get_start_message_data_base(bot_username)
     rows = list(kb.inline_keyboard) if kb and getattr(kb, "inline_keyboard", None) else []
+
+    # Resolve language from user_id if available, else from telegram language_code
+    if user_id:
+        lang = await get_lang(user_id)
+    else:
+        lang = resolve_lang(language_code)
+
     has_ref_btn = any(
         getattr(btn, "callback_data", None) == "user_my_referral"
         for row in rows
         for btn in row
     )
     if not has_ref_btn:
-        # Phase 5: use i18n translation for referral button label
-        lang = resolve_lang(language_code)
         label = i18n_t("btn_my_referral", lang)
         rows.append([InlineKeyboardButton(
             text=label,
             callback_data="user_my_referral",
         )])
+
+    # Add language toggle button
+    has_lang_btn = any(
+        getattr(btn, "callback_data", None) == "lang_menu_start"
+        for row in rows
+        for btn in row
+    )
+    if not has_lang_btn:
+        rows.append([InlineKeyboardButton(
+            text="🌐 اللغة / Language",
+            callback_data="lang_menu_start",
+        )])
+
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -91,13 +109,15 @@ async def cmd_start(message: types.Message):
 
     bot_info = await bot.get_me()
     user_lang = getattr(message.from_user, "language_code", None)
-    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME, language_code=user_lang)
+    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME, language_code=user_lang, user_id=message.from_user.id)
     media_id = await get_setting("start_media_id")
     media_type = await get_setting("start_media_type")
 
     # For non-admin users, add user dashboard button (referral btn already in kb via get_start_message_data)
     from models.admins import is_admin as _is_admin
     if not await _is_admin(message.from_user.id):
+        lang = await get_lang(message.from_user.id)
+        dash_label = "👤 لوحة التحكم" if lang == "ar" else "👤 My Dashboard"
         existing_rows = kb.inline_keyboard if kb else []
         has_dashboard = any(
             getattr(btn, "callback_data", None) == "user_menu"
@@ -105,7 +125,7 @@ async def cmd_start(message: types.Message):
         )
         if not has_dashboard:
             kb = InlineKeyboardMarkup(inline_keyboard=existing_rows + [
-                [InlineKeyboardButton(text="👤 My Dashboard", callback_data="user_menu")]
+                [InlineKeyboardButton(text=dash_label, callback_data="user_menu")]
             ])
 
     try:
@@ -161,8 +181,10 @@ async def cb_start_back(callback: types.CallbackQuery):
     from models.admins import is_admin as _is_admin
     bot_info = await bot.get_me()
     user_lang = getattr(callback.from_user, "language_code", None)
-    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME, language_code=user_lang)
+    text, kb = await get_start_message_data(bot_info.username or BOT_USERNAME, language_code=user_lang, user_id=callback.from_user.id)
     if not await _is_admin(callback.from_user.id):
+        lang = await get_lang(callback.from_user.id)
+        dash_label = "👤 لوحة التحكم" if lang == "ar" else "👤 My Dashboard"
         existing_rows = kb.inline_keyboard if kb else []
         # get_start_message_data already injects referral btn; just add dashboard btn
         has_dashboard = any(
@@ -171,7 +193,7 @@ async def cb_start_back(callback: types.CallbackQuery):
         )
         if not has_dashboard:
             kb = InlineKeyboardMarkup(inline_keyboard=existing_rows + [
-                [InlineKeyboardButton(text="👤 My Dashboard", callback_data="user_menu")]
+                [InlineKeyboardButton(text=dash_label, callback_data="user_menu")]
             ])
     await _edit_start_message(callback.message, text, kb)
     try:

@@ -29,7 +29,7 @@ HEALTH_ICONS = {
 @router.callback_query(F.data == "user_my_groups")
 async def cb_user_my_groups(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    lang = get_lang(user_id)
+    lang = await get_lang(user_id)
     if user_id == ADMIN_ID:
         await callback.answer("Use /admin for owner group management.", show_alert=True)
         return

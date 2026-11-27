@@ -12,6 +12,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 
 from core.config import ADMIN_ID
+from core.i18n import get_lang, t as i18n_t
 from models.groups import get_user_active_groups
 from models.user_campaigns import (
     get_current_campaign, get_quota, update_campaign_status,
@@ -137,6 +138,7 @@ async def cb_user_menu(callback: types.CallbackQuery, state: FSMContext):
         )
         return
 
+    lang = await get_lang(user_id)
     groups = await get_user_active_groups(user_id)
     quota = await get_quota(user_id, _today())
     current = await get_current_campaign(user_id)
@@ -144,24 +146,54 @@ async def cb_user_menu(callback: types.CallbackQuery, state: FSMContext):
     status_icon = ("🟢" if current and current["status"] == "active" else
                    "🔴" if not current else "⏸")
 
-    text = (
-        f"👤 <b>User Dashboard</b>\n\n"
-        f"📱 Groups: <b>{len(groups)}</b>\n"
-        f"📋 Campaigns today: <b>{quota}/5</b>\n"
-        f"📢 Current campaign: <b>{'None' if not current else current.get('status','?')}</b> "
-        f"{status_icon if current else ''}"
-    )
+    if lang == "ar":
+        text = (
+            f"👤 <b>لوحة تحكم المستخدم</b>\n\n"
+            f"📱 المجموعات: <b>{len(groups)}</b>\n"
+            f"📋 حملات اليوم: <b>{quota}/5</b>\n"
+            f"📢 الحملة الحالية: <b>{'لا يوجد' if not current else current.get('status', '?')}</b> "
+            f"{status_icon if current else ''}"
+        )
+        btn_groups = f"📱 مجموعاتي ({len(groups)})"
+        btn_referral = "🔗 رابط الإحالة الخاص بي"
+        btn_create = "➕ إنشاء حملة"
+        btn_quota = "🚫 تم الوصول للحد اليومي (5/5)"
+        btn_campaign = "📋 حملتي الحالية"
+        btn_stats = "📊 إحصائياتي"
+        btn_history = "🗂 سجل حملاتي"
+        btn_lang = "🌐 اللغة / Language"
+    else:
+        text = (
+            f"👤 <b>User Dashboard</b>\n\n"
+            f"📱 Groups: <b>{len(groups)}</b>\n"
+            f"📋 Campaigns today: <b>{quota}/5</b>\n"
+            f"📢 Current campaign: <b>{'None' if not current else current.get('status', '?')}</b> "
+            f"{status_icon if current else ''}"
+        )
+        btn_groups = f"📱 My Groups ({len(groups)})"
+        btn_referral = "🔗 My Referral Link"
+        btn_create = "➕ Create Campaign"
+        btn_quota = "🚫 Daily Limit Reached (5/5)"
+        btn_campaign = "📋 My Campaign"
+        btn_stats = "📊 My Stats"
+        btn_history = "🗂 Campaign History"
+        btn_lang = "🌐 اللغة / Language"
+
     buttons = [
-        [types.InlineKeyboardButton(text=f"📱 My Groups ({len(groups)})", callback_data="user_my_groups")],
-        [types.InlineKeyboardButton(text="🔗 رابط الاحالة الخاص بي", callback_data="user_my_referral")],
+        [types.InlineKeyboardButton(text=btn_groups, callback_data="user_my_groups")],
+        [types.InlineKeyboardButton(text=btn_referral, callback_data="user_my_referral")],
     ]
     if quota < 5:
-        buttons.append([types.InlineKeyboardButton(text="➕ Create Campaign", callback_data="user_create_campaign")])
+        buttons.append([types.InlineKeyboardButton(text=btn_create, callback_data="user_create_campaign")])
     else:
-        buttons.append([types.InlineKeyboardButton(text="🚫 Daily Limit Reached (5/5)", callback_data="user_quota_info")])
+        buttons.append([types.InlineKeyboardButton(text=btn_quota, callback_data="user_quota_info")])
 
     if current:
-        buttons.append([types.InlineKeyboardButton(text="📋 My Campaign", callback_data="user_view_campaign")])
+        buttons.append([types.InlineKeyboardButton(text=btn_campaign, callback_data="user_view_campaign")])
+
+    buttons.append([types.InlineKeyboardButton(text=btn_stats, callback_data="user_my_stats")])
+    buttons.append([types.InlineKeyboardButton(text=btn_history, callback_data="user_campaign_history")])
+    buttons.append([types.InlineKeyboardButton(text=btn_lang, callback_data="lang_menu_user")])
 
     kb = types.InlineKeyboardMarkup(inline_keyboard=buttons)
     try:
