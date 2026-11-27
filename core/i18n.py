@@ -152,6 +152,12 @@ class LanguageMiddleware(BaseMiddleware):
         data: Dict[str, Any],
     ) -> Any:
         user = data.get("event_from_user")
+        if user is None:
+            for _attr in ("callback_query", "message", "edited_message", "pre_checkout_query", "my_chat_member", "chat_member"):
+                _sub = getattr(event, _attr, None)
+                if _sub is not None and getattr(_sub, "from_user", None) is not None:
+                    user = _sub.from_user
+                    break
         uid = getattr(user, "id", None) if user is not None else None
         tg_code = getattr(user, "language_code", None) if user is not None else None
 

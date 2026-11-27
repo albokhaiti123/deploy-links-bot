@@ -31,7 +31,7 @@ from core.i18n import LanguageMiddleware
 def register_all_routers(dp: Dispatcher) -> None:
     """Register all handler routers with the dispatcher."""
     # Phase 5: register language middleware globally
-    dp.update.middleware(LanguageMiddleware())
+    dp.update.outer_middleware(LanguageMiddleware())
 
     dp.include_routers(
         # Language switcher — register first so /lang is always available
