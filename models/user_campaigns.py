@@ -559,12 +559,12 @@ async def get_campaign_last_run_deliveries(campaign_id: int, user_id: int) -> li
 
 
 async def get_user_campaign_history(user_id: int, limit: int = 10) -> list[dict]:
-    """Return the last `limit` campaigns for user with delivery summary."""
+    """Return the last `limit` campaigns for user with full metadata & accurate delivery summary."""
     async with get_db() as db:
         async with db.execute(
             """
-            SELECT id, text, photo_file_id, mode, repeat_hours, status,
-                   created_at, run_id
+            SELECT id, text, photo_file_id, buttons_json, mode, repeat_hours,
+                   auto_delete_seconds, status, created_at, run_id
             FROM user_campaigns
             WHERE owner_user_id=?
             ORDER BY id DESC
@@ -576,25 +576,34 @@ async def get_user_campaign_history(user_id: int, limit: int = 10) -> list[dict]
 
         result = []
         for r in rows:
-            cid, text, photo_id, mode, repeat_hours, status, created_at, run_id = r
-            # delivery summary for this campaign
+            cid, text, photo_id, buttons_json, mode, repeat_hours, auto_del, status, created_at, run_id = r
             async with db.execute(
                 "SELECT status, COUNT(*) FROM user_campaign_deliveries WHERE campaign_id=? GROUP BY status",
                 (cid,),
             ) as dc:
                 d_rows = await dc.fetchall()
-            d_map = {dr[0]: dr[1] for dr in d_rows}
+            d_map = {str(dr[0]).lower(): int(dr[1]) for dr in d_rows if dr[0] is not None}
+            sent_ok = sum(
+                cnt for st, cnt in d_map.items()
+                if st in ("sent", "sent_confirmed", "confirmed", "ok", "delivered")
+            )
+            sent_fail = sum(
+                cnt for st, cnt in d_map.items()
+                if "fail" in st or "error" in st
+            )
             result.append({
-                "id":           cid,
-                "text":         text,
-                "photo_file_id": photo_id,
-                "mode":         mode,
-                "repeat_hours": repeat_hours,
-                "status":       status,
-                "created_at":   created_at,
-                "run_id":       run_id,
-                "sent_ok":      d_map.get("sent", 0),
-                "sent_fail":    d_map.get("failed", 0),
+                "id":                  cid,
+                "text":                text,
+                "photo_file_id":       photo_id,
+                "buttons_json":        buttons_json,
+                "mode":                mode,
+                "repeat_hours":        repeat_hours,
+                "auto_delete_seconds": auto_del,
+                "status":              status,
+                "created_at":          created_at,
+                "run_id":              run_id,
+                "sent_ok":             sent_ok,
+                "sent_fail":           sent_fail,
             })
     return result
 

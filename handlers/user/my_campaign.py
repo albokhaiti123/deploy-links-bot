@@ -92,19 +92,12 @@ def _p7_validate_single_button(label: str, url: str) -> tuple[bool, str | None]:
         or not url.startswith(("https://", "http://", "tg://"))
     ):
         return False, "url"
-    # Try validate_buttons service
-    payload = [{"text": label, "url": url}]
+    # Match validate_buttons() schema: list of rows containing {"label": ..., "url": ...}
+    service_payload = [[{"label": label, "url": url}]]
     try:
-        res = validate_buttons(json.dumps(payload))
+        res = validate_buttons(json.dumps(service_payload))
         if res is False or (isinstance(res, tuple) and len(res) >= 2 and res[0] is False):
             return False, "url"
-    except TypeError:
-        try:
-            res = validate_buttons(payload)
-            if res is False or (isinstance(res, tuple) and len(res) >= 2 and res[0] is False):
-                return False, "url"
-        except Exception:
-            pass
     except Exception:
         pass
     return True, None

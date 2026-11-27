@@ -96,6 +96,7 @@ async def cb_my_stats(call: types.CallbackQuery):
     stats = await get_user_overall_stats(call.from_user.id)
     text = t("u8_stats_body", lang).format(**stats)
 
+    kb_rows = []
     camp = await get_current_campaign(call.from_user.id)
     if camp:
         text += t("u8_stats_current_section", lang).format(
@@ -105,10 +106,27 @@ async def cb_my_stats(call: types.CallbackQuery):
             last_run=_fmt_dt(camp.get("last_run_at"), lang) if camp.get("last_run_at") else t("u8_not_run_yet", lang),
             next_run=_fmt_dt(camp.get("next_run_at"), lang),
         )
+        kb_rows.append([types.InlineKeyboardButton(
+            text=t("u8_btn_last_report", lang),
+            callback_data=f"user_camp_report_{camp['id']}",
+        )])
     else:
         text += "\n\n" + t("u8_stats_no_current", lang)
 
-    await call.message.edit_text(text, parse_mode=ParseMode.HTML)
+    kb_rows.append([types.InlineKeyboardButton(
+        text=t("u8_btn_my_history", lang),
+        callback_data="user_campaign_history",
+    )])
+    kb_rows.append([types.InlineKeyboardButton(
+        text=t("btn_back", lang),
+        callback_data="user_menu",
+    )])
+
+    await call.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb_rows),
+    )
     await call.answer()
 
 
@@ -670,7 +688,6 @@ async def cb_campaign_history(call: types.CallbackQuery):
     text = t("u8_hist_title", lang)
     rows_kb = []
     for camp in history:
-        status_label = _status_label(camp["status"], lang)
         btn_label = t("u8_hist_item_btn", lang).format(
             cid=camp["id"],
             status=camp["status"],
@@ -681,8 +698,12 @@ async def cb_campaign_history(call: types.CallbackQuery):
             callback_data=f"u8_hist_detail_{camp['id']}",
         )])
 
-    rows_kb.append([types.InlineKeyboardButton(text=t("btn_back", lang), callback_data="user_my_stats")])
-    await call.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=rows_kb))
+    rows_kb.append([types.InlineKeyboardButton(text=t("btn_back", lang), callback_data="user_menu")])
+    await call.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=rows_kb),
+    )
     await call.answer()
 
 
@@ -724,40 +745,60 @@ async def cb_relaunch(call: types.CallbackQuery, state: FSMContext):
         await call.answer(t("u8_camp_not_found", lang), show_alert=True)
         return
 
-    # Load groups
     groups = await get_user_active_groups(call.from_user.id)
     if not groups:
         await call.answer(t("u8_relaunch_no_groups", lang), show_alert=True)
         return
 
-    # Pre-fill wizard state with old campaign data and jump to confirm
-    buttons_raw = []
+    # Normalize stored buttons_json -> wizard format [{"text":..,"url":..}]
+    buttons_list = []
     if camp.get("buttons_json"):
         try:
-            buttons_raw = json.loads(camp["buttons_json"])
+            parsed = json.loads(camp["buttons_json"])
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, list):
+                        for b in item:
+                            if isinstance(b, dict) and b.get("url"):
+                                lbl = b.get("label") or b.get("text")
+                                if lbl:
+                                    buttons_list.append({"text": str(lbl), "url": str(b["url"])})
+                    elif isinstance(item, dict) and item.get("url"):
+                        lbl = item.get("text") or item.get("label")
+                        if lbl:
+                            buttons_list.append({"text": str(lbl), "url": str(item["url"])})
         except Exception:
-            buttons_raw = []
+            buttons_list = []
 
-    group_ids = [g[0] for g in groups]
+    avail = [[int(g[0]), str(g[1] or g[0])] for g in groups]
+    group_ids = [int(g[0]) for g in groups]
 
     await state.update_data(
         text=camp.get("text"),
         photo_file_id=camp.get("photo_file_id"),
-        buttons=buttons_raw,
+        buttons_list=buttons_list,
+        buttons=buttons_list,
+        available_groups=avail,
+        selected_groups=group_ids,
+        target_chat_ids=group_ids,
         group_ids=group_ids,
+        _groups_touched=True,
         mode=camp.get("mode", "immediate"),
-        repeat_hours=camp.get("repeat_hours"),
-        auto_delete_seconds=None,
+        repeat_hours=int(camp.get("repeat_hours") or 0),
+        auto_delete_seconds=int(camp.get("auto_delete_seconds") or 0),
+        editing_field=None,
     )
     await state.set_state(UserCampaignWizard.confirm)
     await call.answer(t("u8_relaunch_ready_toast", lang), show_alert=True)
-    # Notify user to proceed to confirm
     await call.message.answer(
         t("u8_relaunch_ready_toast", lang),
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[[
-            types.InlineKeyboardButton(text=t("uc_btn_confirm_launch", lang), callback_data="ucw_confirm_launch"),
-            types.InlineKeyboardButton(text=t("uc_btn_edit_campaign", lang), callback_data="ucw_edit_menu"),
-        ]]),
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [
+                types.InlineKeyboardButton(text=t("uc_btn_confirm_launch", lang), callback_data="ucw_confirm_launch"),
+                types.InlineKeyboardButton(text=t("uc_btn_edit_campaign", lang), callback_data="ucw_edit_menu"),
+            ],
+            [types.InlineKeyboardButton(text=t("uc_btn_cancel", lang), callback_data="ucw_cancel_wizard")],
+        ]),
     )
 
 
